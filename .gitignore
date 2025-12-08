@@ -1,0 +1,22 @@
+# Binaries
+failover-manager
+failover-agent
+*.exe
+
+# Config files with secrets
+*-config.json
+!*-config.example.json
+
+# Logs
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Go
+vendor/
+go.sum
+

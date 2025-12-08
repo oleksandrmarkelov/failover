@@ -1,0 +1,15 @@
+{
+  "listen_addr": ":8080",
+  "local_rpc": "http://127.0.0.1:8899",
+  "process_name": "agave-validator",
+  "peer_endpoint": "http://192.168.1.10:8080",
+  "is_active_on_start": false,
+  "manager_timeout": "30s",
+  "tower_backup_command": "etcdctl put /solana/tower/passive \"$(cat /path/to/ledger/tower-1_9-*.bin | base64)\"",
+  "tower_restore_command": "etcdctl get /solana/tower/active --print-value-only | base64 -d > /path/to/ledger/tower-1_9-*.bin",
+  "identity_change_command": "agave-validator --ledger /path/to/ledger set-identity /path/to/validator-keypair.json",
+  "identity_remove_command": "agave-validator --ledger /path/to/ledger set-identity /path/to/unstaked-identity.json",
+  "dry_run": true,
+  "log_file": "/var/log/failover-validator.log"
+}
+

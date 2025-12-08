@@ -1,0 +1,11 @@
+{
+  "active_validator": "http://192.168.1.10:8080",
+  "passive_validator": "http://192.168.1.11:8080",
+  "heartbeat_interval": "5s",
+  "misses_before_failover": 5,
+  "slot_diff_threshold": 100,
+  "request_timeout": "5s",
+  "dry_run": true,
+  "log_file": "/var/log/failover-manager.log"
+}
+

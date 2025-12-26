@@ -58,6 +58,8 @@ type ValidatorAgent struct {
 	lastManagerPing time.Time
 	lastTowerBackup time.Time
 	missedPings     int
+	startTime       time.Time // When agent started
+	hasSeenManager  bool      // Whether we've received at least one manager ping
 
 	// HTTP client for peer communication
 	httpClient *http.Client
@@ -70,10 +72,13 @@ type ValidatorAgent struct {
 // NewValidatorAgent creates a new validator agent
 func NewValidatorAgent(cfg *config.ValidatorConfig) *ValidatorAgent {
 	ctx, cancel := context.WithCancel(context.Background())
+	now := time.Now()
 	return &ValidatorAgent{
 		config:          cfg,
 		isActive:        cfg.IsActiveOnStart,
-		lastManagerPing: time.Now(),
+		lastManagerPing: time.Time{}, // Zero time - indicates never received ping
+		startTime:       now,
+		hasSeenManager:  false,
 		httpClient: &http.Client{
 			Timeout: 5 * time.Second,
 		},
@@ -339,6 +344,7 @@ func (va *ValidatorAgent) handleStatus(w http.ResponseWriter, r *http.Request) {
 	// Update last manager ping time
 	va.mu.Lock()
 	va.lastManagerPing = time.Now()
+	va.hasSeenManager = true // Mark that we've seen manager at least once
 	va.missedPings = 0
 	va.mu.Unlock()
 
@@ -481,6 +487,9 @@ func (va *ValidatorAgent) managerWatchLoop() {
 		managerTimeout = 30 * time.Second
 	}
 
+	// Startup grace period: wait for manager to start before monitoring
+	startupGracePeriod := 60 * time.Second
+
 	for {
 		select {
 		case <-va.ctx.Done():
@@ -489,6 +498,8 @@ func (va *ValidatorAgent) managerWatchLoop() {
 			va.mu.RLock()
 			isActive := va.isActive
 			lastPing := va.lastManagerPing
+			hasSeenManager := va.hasSeenManager
+			startTime := va.startTime
 			va.mu.RUnlock()
 
 			// Only active validator needs to worry about manager timeout
@@ -496,6 +507,21 @@ func (va *ValidatorAgent) managerWatchLoop() {
 				continue
 			}
 
+			// Startup grace period: if we haven't seen manager yet and we're still in grace period, wait
+			if !hasSeenManager {
+				timeSinceStart := time.Since(startTime)
+				if timeSinceStart < startupGracePeriod {
+					log.Printf("Waiting for manager to start (grace period: %v remaining)",
+						startupGracePeriod-timeSinceStart)
+					continue
+				}
+				// Grace period expired, but we still haven't seen manager
+				// This is OK - manager might start later, don't take action yet
+				log.Printf("Startup grace period expired, but manager not seen yet. Continuing to wait...")
+				continue
+			}
+
+			// We've seen manager at least once, now monitor for timeout
 			// Check if manager has been silent too long
 			if time.Since(lastPing) > managerTimeout {
 				log.Printf("WARNING: No manager heartbeat for %v (timeout: %v)",

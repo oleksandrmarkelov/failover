@@ -288,10 +288,34 @@ func (va *ValidatorAgent) becomePassive(reason string) error {
 
 	if err != nil {
 		log.Printf("WARNING: Failed to remove identity: %v", err)
+	} else {
+		log.Printf("Identity remove output: %s", strings.TrimSpace(output))
+	}
+
+	// Step 3: Remove tower file to prevent stale tower usage
+	if va.config.TowerFilePath != "" {
+		log.Printf("Step 3: Removing tower file: %s", va.config.TowerFilePath)
+		if va.config.DryRun {
+			log.Printf("[DRY-RUN] Would remove tower file: %s", va.config.TowerFilePath)
+		} else {
+			if removeErr := os.Remove(va.config.TowerFilePath); removeErr != nil {
+				if os.IsNotExist(removeErr) {
+					log.Printf("Tower file does not exist (already removed): %s", va.config.TowerFilePath)
+				} else {
+					log.Printf("WARNING: Failed to remove tower file: %v", removeErr)
+				}
+			} else {
+				log.Printf("Tower file removed successfully")
+			}
+		}
+	} else {
+		log.Printf("Step 3: Skipping tower file removal (tower_file_path not configured)")
+	}
+
+	if err != nil {
 		log.Printf("=== NOW PASSIVE (with identity removal error) ===")
 		return fmt.Errorf("failed to remove identity: %w", err)
 	}
-	log.Printf("Identity remove output: %s", strings.TrimSpace(output))
 
 	log.Printf("=== NOW PASSIVE ===")
 	return nil

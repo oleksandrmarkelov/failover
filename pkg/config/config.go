@@ -78,6 +78,10 @@ type ValidatorConfig struct {
 	// Example: "solana-validator set-identity --require-tower /path/to/unstaked-identity.json"
 	IdentityRemoveCommand string `json:"identity_remove_command"`
 
+	// TowerFilePath path to tower file to remove when becoming passive
+	// Example: "/home/solana/solana_testnet/validator-ledger/tower-1_9-DQx6XD5fWQ2Pbkg4Fi4gVzLbGg6c4ST7ZgXTawZZAXEY.bin"
+	TowerFilePath string `json:"tower_file_path"`
+
 	// DryRun if true, don't execute commands, just log them
 	DryRun bool `json:"dry_run"`
 
@@ -209,6 +213,7 @@ func DefaultValidatorConfig() *ValidatorConfig {
 		TowerRestoreCommand:   "echo 'tower restore command not configured'",
 		IdentityChangeCommand: "echo 'identity change command not configured'",
 		IdentityRemoveCommand: "echo 'identity remove command not configured'",
+		TowerFilePath:         "",
 		DryRun:                true,
 	}
 }

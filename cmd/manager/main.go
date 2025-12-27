@@ -491,6 +491,9 @@ func (m *Manager) Monitor() error {
 	log.Printf("========================================")
 	log.Println()
 
+	// Start network slot monitoring loop
+	go m.networkSlotLoop()
+
 	// Initial check
 	m.checkAndFailover()
 

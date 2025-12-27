@@ -73,7 +73,8 @@ type ValidatorAgent struct {
 func NewValidatorAgent(cfg *config.ValidatorConfig) *ValidatorAgent {
 	ctx, cancel := context.WithCancel(context.Background())
 	now := time.Now()
-	return &ValidatorAgent{
+
+	agent := &ValidatorAgent{
 		config:          cfg,
 		isActive:        cfg.IsActiveOnStart,
 		lastManagerPing: time.Time{}, // Zero time - indicates never received ping
@@ -85,6 +86,21 @@ func NewValidatorAgent(cfg *config.ValidatorConfig) *ValidatorAgent {
 		ctx:    ctx,
 		cancel: cancel,
 	}
+
+	// Try to auto-detect active state from gossip if configured
+	if cfg.GossipCheckCommand != "" && cfg.LocalIP != "" {
+		log.Printf("Checking active state from gossip...")
+		isActive, err := agent.checkActiveFromGossip()
+		if err != nil {
+			log.Printf("Warning: Failed to check gossip for active state: %v", err)
+			log.Printf("Falling back to is_active_on_start=%v", cfg.IsActiveOnStart)
+		} else {
+			agent.isActive = isActive
+			log.Printf("Auto-detected active state from gossip: is_active=%v", isActive)
+		}
+	}
+
+	return agent
 }
 
 // isProcessRunning checks if agave-validator process is running (Ubuntu/Linux)
@@ -142,6 +158,47 @@ func (va *ValidatorAgent) isProcessHealthy() (running bool, uptime int64, health
 	healthy = uptime >= minUptime
 
 	return running, uptime, healthy
+}
+
+// checkActiveFromGossip checks if this server is the active validator by comparing
+// the IP in gossip output with the local IP
+// Returns: isActive, error (nil error means check was successful)
+func (va *ValidatorAgent) checkActiveFromGossip() (bool, error) {
+	if va.config.GossipCheckCommand == "" || va.config.LocalIP == "" {
+		return false, fmt.Errorf("gossip check not configured (need gossip_check_command and local_ip)")
+	}
+
+	cmd := exec.Command("bash", "-c", va.config.GossipCheckCommand)
+	output, err := cmd.Output()
+	if err != nil {
+		// grep returns exit code 1 if no match found
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			// No match in gossip - validator identity not found
+			log.Printf("Validator identity not found in gossip")
+			return false, nil
+		}
+		return false, fmt.Errorf("gossip check command failed: %w", err)
+	}
+
+	// Parse gossip output: first column is IP
+	// Example: "80.251.153.166  | DQx6XD5fWQ2Pbkg4Fi4gVzLbGg6c4ST7ZgXTawZZAXEY | ..."
+	line := strings.TrimSpace(string(output))
+	if line == "" {
+		return false, nil
+	}
+
+	// Split by | and get first field (IP)
+	parts := strings.Split(line, "|")
+	if len(parts) < 1 {
+		return false, fmt.Errorf("unexpected gossip output format: %s", line)
+	}
+
+	gossipIP := strings.TrimSpace(parts[0])
+	isActive := gossipIP == va.config.LocalIP
+
+	log.Printf("Gossip check: gossip_ip=%s, local_ip=%s, is_active=%v", gossipIP, va.config.LocalIP, isActive)
+
+	return isActive, nil
 }
 
 // getSlot gets current slot from local validator RPC

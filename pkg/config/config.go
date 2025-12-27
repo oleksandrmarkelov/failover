@@ -82,6 +82,19 @@ type ValidatorConfig struct {
 	// Example: "/home/solana/solana_testnet/validator-ledger/tower-1_9-DQx6XD5fWQ2Pbkg4Fi4gVzLbGg6c4ST7ZgXTawZZAXEY.bin"
 	TowerFilePath string `json:"tower_file_path"`
 
+	// ValidatorIdentity is the public key of the validator to check in gossip
+	// Example: "DQx6XD5fWQ2Pbkg4Fi4gVzLbGg6c4ST7ZgXTawZZAXEY"
+	ValidatorIdentity string `json:"validator_identity"`
+
+	// GossipCheckCommand command to check gossip for validator identity
+	// Should output the gossip line for the validator identity
+	// Example: "solana -ut gossip | grep DQx6XD5fWQ2Pbkg4Fi4gVzLbGg6c4ST7ZgXTawZZAXEY"
+	GossipCheckCommand string `json:"gossip_check_command"`
+
+	// LocalIP is the IP address of this server to compare with gossip output
+	// Example: "80.251.153.166"
+	LocalIP string `json:"local_ip"`
+
 	// DryRun if true, don't execute commands, just log them
 	DryRun bool `json:"dry_run"`
 
@@ -214,6 +227,9 @@ func DefaultValidatorConfig() *ValidatorConfig {
 		IdentityChangeCommand: "echo 'identity change command not configured'",
 		IdentityRemoveCommand: "echo 'identity remove command not configured'",
 		TowerFilePath:         "",
+		ValidatorIdentity:     "",
+		GossipCheckCommand:    "",
+		LocalIP:               "",
 		DryRun:                true,
 	}
 }

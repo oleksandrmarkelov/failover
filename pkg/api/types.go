@@ -97,6 +97,27 @@ type PeerStatusResponse struct {
 	Timestamp int64 `json:"timestamp"`
 }
 
+// ShutdownCommand is sent by manager to shut down an agent
+type ShutdownCommand struct {
+	// Reason for the shutdown
+	Reason string `json:"reason"`
+
+	// Timestamp when command was sent
+	Timestamp int64 `json:"timestamp"`
+}
+
+// ShutdownResponse is returned after shutdown command
+type ShutdownResponse struct {
+	// Success indicates if the shutdown was acknowledged
+	Success bool `json:"success"`
+
+	// Message contains details about the shutdown
+	Message string `json:"message"`
+
+	// Timestamp when response was generated
+	Timestamp int64 `json:"timestamp"`
+}
+
 // HealthCheckInterval constants
 const (
 	DefaultHeartbeatInterval    = 5 * time.Second

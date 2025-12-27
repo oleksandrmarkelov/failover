@@ -471,6 +471,38 @@ func (va *ValidatorAgent) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("OK"))
 }
 
+// handleShutdown handles the /shutdown endpoint (from manager)
+func (va *ValidatorAgent) handleShutdown(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var cmd api.ShutdownCommand
+	if err := json.NewDecoder(r.Body).Decode(&cmd); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("Shutdown command received: Reason=%s", cmd.Reason)
+
+	response := api.ShutdownResponse{
+		Success:   true,
+		Message:   "Agent shutdown initiated",
+		Timestamp: time.Now().Unix(),
+	}
+
+	va.sendJSON(w, response)
+
+	// Shutdown the agent after sending response
+	go func() {
+		time.Sleep(100 * time.Millisecond) // Give time for response to be sent
+		log.Printf("=== AGENT SHUTTING DOWN === Reason: %s", cmd.Reason)
+		va.Stop()
+		os.Exit(0)
+	}()
+}
+
 // sendJSON sends a JSON response
 func (va *ValidatorAgent) sendJSON(w http.ResponseWriter, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
@@ -568,6 +600,7 @@ func (va *ValidatorAgent) Start() error {
 	http.HandleFunc("/peer-status", va.handlePeerStatus)
 	http.HandleFunc("/failover", va.handleFailover)
 	http.HandleFunc("/health", va.handleHealth)
+	http.HandleFunc("/shutdown", va.handleShutdown)
 
 	// Start background loop for manager watch
 	// Note: Tower backup is now done on each status request from manager

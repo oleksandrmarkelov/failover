@@ -517,6 +517,72 @@ func (m *Manager) GetActiveValidator() string {
 	return m.validators[m.activeIdx].Endpoint
 }
 
+// sendShutdownCommand sends a shutdown command to a validator agent
+func sendShutdownCommand(endpoint string, timeout time.Duration) error {
+	cmd := api.ShutdownCommand{
+		Reason:    "Manager requested shutdown",
+		Timestamp: time.Now().Unix(),
+	}
+
+	jsonBody, err := json.Marshal(cmd)
+	if err != nil {
+		return fmt.Errorf("failed to marshal command: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/shutdown", strings.TrimSuffix(endpoint, "/"))
+	client := &http.Client{Timeout: timeout}
+
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewBuffer(jsonBody))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("agent returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var shutdownResp api.ShutdownResponse
+	if err := json.NewDecoder(resp.Body).Decode(&shutdownResp); err != nil {
+		return fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	if !shutdownResp.Success {
+		return fmt.Errorf("agent failed to shutdown: %s", shutdownResp.Message)
+	}
+
+	return nil
+}
+
+// shutdownAgents sends shutdown commands to all configured agents
+func shutdownAgents(cfg *config.ManagerConfig) {
+	timeout := cfg.RequestTimeout.Duration()
+	if timeout == 0 {
+		timeout = 5 * time.Second
+	}
+
+	endpoints := []string{cfg.ActiveValidator, cfg.PassiveValidator}
+
+	for _, endpoint := range endpoints {
+		if endpoint == "" {
+			continue
+		}
+		log.Printf("Sending shutdown command to agent at %s...", endpoint)
+		if err := sendShutdownCommand(endpoint, timeout); err != nil {
+			log.Printf("Failed to shutdown agent at %s: %v", endpoint, err)
+		} else {
+			log.Printf("Agent at %s acknowledged shutdown", endpoint)
+		}
+	}
+}
+
 func main() {
 	// Command line flags
 	configFile := flag.String("config", "", "Path to config file")
@@ -529,6 +595,7 @@ func main() {
 	dryRun := flag.Bool("dry-run", true, "Dry-run mode (don't trigger failover)")
 	logFile := flag.String("log-file", "", "Path to log file (logs to both console and file)")
 	generateConfig := flag.Bool("generate-config", false, "Generate example config file")
+	shutdownAgent := flag.Bool("shutdown-agent", false, "Send shutdown command to all agents and exit")
 
 	flag.Parse()
 
@@ -550,6 +617,13 @@ func main() {
 		cfg, err = config.LoadManagerConfig(*configFile)
 		if err != nil {
 			log.Fatalf("Failed to load config: %v", err)
+		}
+	} else if *shutdownAgent {
+		// For shutdown-agent mode, we still need endpoints but can work with partial config
+		cfg = &config.ManagerConfig{
+			ActiveValidator:  *activeValidator,
+			PassiveValidator: *passiveValidator,
+			RequestTimeout:   config.Duration(*requestTimeout),
 		}
 	} else {
 		if *activeValidator == "" || *passiveValidator == "" {
@@ -576,6 +650,17 @@ func main() {
 	}
 	if os.Getenv("DRY_RUN") == "false" {
 		cfg.DryRun = false
+	}
+
+	// Handle shutdown-agent mode
+	if *shutdownAgent {
+		if cfg.ActiveValidator == "" && cfg.PassiveValidator == "" {
+			log.Fatal("At least one validator endpoint (--active or --passive) is required for --shutdown-agent")
+		}
+		log.Println("=== Sending shutdown commands to agents ===")
+		shutdownAgents(cfg)
+		log.Println("=== Shutdown commands sent ===")
+		return
 	}
 
 	// Setup logging (console + file if specified)

@@ -279,14 +279,19 @@ func (va *ValidatorAgent) becomePassive(reason string) error {
 	// Step 2: Remove identity
 	log.Printf("Step 2: Removing validator identity...")
 	output, err := va.executeCommand(va.config.IdentityRemoveCommand, false)
-	if err != nil {
-		return fmt.Errorf("failed to remove identity: %w", err)
-	}
-	log.Printf("Identity remove output: %s", strings.TrimSpace(output))
 
+	// Mark as passive regardless of command result
+	// This ensures we stop writing tower files even if the command fails
 	va.mu.Lock()
 	va.isActive = false
 	va.mu.Unlock()
+
+	if err != nil {
+		log.Printf("WARNING: Failed to remove identity: %v", err)
+		log.Printf("=== NOW PASSIVE (with identity removal error) ===")
+		return fmt.Errorf("failed to remove identity: %w", err)
+	}
+	log.Printf("Identity remove output: %s", strings.TrimSpace(output))
 
 	log.Printf("=== NOW PASSIVE ===")
 	return nil

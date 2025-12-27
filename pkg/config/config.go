@@ -7,13 +7,35 @@ import (
 	"time"
 )
 
+// ValidatorEndpoint holds endpoint and IP for a validator
+type ValidatorEndpoint struct {
+	// Endpoint is the agent HTTP endpoint (e.g., "http://192.168.1.10:8080")
+	Endpoint string `json:"endpoint"`
+
+	// IP is the public IP of this validator for gossip matching (e.g., "80.251.153.166")
+	IP string `json:"ip"`
+}
+
 // ManagerConfig is the configuration for the manager program
 type ManagerConfig struct {
 	// ActiveValidator endpoint (e.g., "http://192.168.1.10:8080")
+	// Can be auto-detected from gossip if Validator1, Validator2, and GossipCheckCommand are set
 	ActiveValidator string `json:"active_validator"`
 
 	// PassiveValidator endpoint (e.g., "http://192.168.1.11:8080")
+	// Can be auto-detected from gossip if Validator1, Validator2, and GossipCheckCommand are set
 	PassiveValidator string `json:"passive_validator"`
+
+	// Validator1 endpoint and IP for auto-detection (e.g., {"endpoint": "http://192.168.1.10:8080", "ip": "80.251.153.166"})
+	Validator1 ValidatorEndpoint `json:"validator1"`
+
+	// Validator2 endpoint and IP for auto-detection (e.g., {"endpoint": "http://192.168.1.11:8080", "ip": "80.251.153.167"})
+	Validator2 ValidatorEndpoint `json:"validator2"`
+
+	// GossipCheckCommand command to check gossip for validator identity
+	// Should output the gossip line for the validator identity
+	// Example: "solana -ut gossip | grep DQx6XD5fWQ2Pbkg4Fi4gVzLbGg6c4ST7ZgXTawZZAXEY"
+	GossipCheckCommand string `json:"gossip_check_command"`
 
 	// ClusterRPC endpoint to check network slot (e.g., "https://api.mainnet-beta.solana.com")
 	// This is used to detect if validators are behind the network

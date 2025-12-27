@@ -1,6 +1,15 @@
 {
-  "active_validator": "http://192.168.1.10:8080",
-  "passive_validator": "http://192.168.1.11:8080",
+  "validator1": {
+    "endpoint": "http://192.168.1.10:8080",
+    "ip": "80.251.153.166"
+  },
+  "validator2": {
+    "endpoint": "http://192.168.1.11:8080",
+    "ip": "80.251.153.167"
+  },
+  "gossip_check_command": "solana -ut gossip | grep YOUR_VALIDATOR_IDENTITY_PUBKEY",
+  "cluster_rpc": "https://api.testnet.solana.com",
+  "slot_check_interval": "30s",
   "heartbeat_interval": "5s",
   "misses_before_failover": 5,
   "slot_diff_threshold": 100,
@@ -8,4 +17,3 @@
   "dry_run": true,
   "log_file": "/var/log/failover-manager.log"
 }
-

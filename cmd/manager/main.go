@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"sync"
@@ -586,6 +587,60 @@ func shutdownAgents(cfg *config.ManagerConfig) {
 	}
 }
 
+// detectActiveFromGossip detects which validator is active by checking gossip
+// Returns activeEndpoint, passiveEndpoint, error
+func detectActiveFromGossip(cfg *config.ManagerConfig) (string, string, error) {
+	if cfg.GossipCheckCommand == "" {
+		return "", "", fmt.Errorf("gossip_check_command not configured")
+	}
+	if cfg.Validator1.Endpoint == "" || cfg.Validator1.IP == "" {
+		return "", "", fmt.Errorf("validator1 endpoint and ip not configured")
+	}
+	if cfg.Validator2.Endpoint == "" || cfg.Validator2.IP == "" {
+		return "", "", fmt.Errorf("validator2 endpoint and ip not configured")
+	}
+
+	cmd := exec.Command("bash", "-c", cfg.GossipCheckCommand)
+	output, err := cmd.Output()
+	if err != nil {
+		// grep returns exit code 1 if no match found
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return "", "", fmt.Errorf("validator identity not found in gossip")
+		}
+		return "", "", fmt.Errorf("gossip check command failed: %w", err)
+	}
+
+	// Parse gossip output: first column is IP
+	// Example: "80.251.153.166  | DQx6XD5fWQ2Pbkg4Fi4gVzLbGg6c4ST7ZgXTawZZAXEY | ..."
+	line := strings.TrimSpace(string(output))
+	if line == "" {
+		return "", "", fmt.Errorf("empty gossip output")
+	}
+
+	// Split by | and get first field (IP)
+	parts := strings.Split(line, "|")
+	if len(parts) < 1 {
+		return "", "", fmt.Errorf("unexpected gossip output format: %s", line)
+	}
+
+	gossipIP := strings.TrimSpace(parts[0])
+	log.Printf("Gossip check: active validator IP from gossip: %s", gossipIP)
+
+	// Determine which validator is active based on gossip IP
+	if gossipIP == cfg.Validator1.IP {
+		log.Printf("Validator1 (%s) is active, Validator2 (%s) is passive",
+			cfg.Validator1.Endpoint, cfg.Validator2.Endpoint)
+		return cfg.Validator1.Endpoint, cfg.Validator2.Endpoint, nil
+	} else if gossipIP == cfg.Validator2.IP {
+		log.Printf("Validator2 (%s) is active, Validator1 (%s) is passive",
+			cfg.Validator2.Endpoint, cfg.Validator1.Endpoint)
+		return cfg.Validator2.Endpoint, cfg.Validator1.Endpoint, nil
+	}
+
+	return "", "", fmt.Errorf("gossip IP %s does not match validator1 (%s) or validator2 (%s)",
+		gossipIP, cfg.Validator1.IP, cfg.Validator2.IP)
+}
+
 func main() {
 	// Command line flags
 	configFile := flag.String("config", "", "Path to config file")
@@ -653,6 +708,21 @@ func main() {
 	}
 	if os.Getenv("DRY_RUN") == "false" {
 		cfg.DryRun = false
+	}
+
+	// Auto-detect active/passive from gossip if not explicitly set
+	if cfg.ActiveValidator == "" || cfg.PassiveValidator == "" {
+		if cfg.GossipCheckCommand != "" && cfg.Validator1.Endpoint != "" && cfg.Validator2.Endpoint != "" {
+			log.Println("Auto-detecting active/passive validators from gossip...")
+			activeEndpoint, passiveEndpoint, err := detectActiveFromGossip(cfg)
+			if err != nil {
+				log.Fatalf("Failed to detect active/passive from gossip: %v", err)
+			}
+			cfg.ActiveValidator = activeEndpoint
+			cfg.PassiveValidator = passiveEndpoint
+		} else if cfg.ActiveValidator == "" || cfg.PassiveValidator == "" {
+			log.Fatal("Both active and passive validator endpoints are required. Either set active_validator/passive_validator or configure validator1, validator2, and gossip_check_command for auto-detection.")
+		}
 	}
 
 	// Handle shutdown-agent mode

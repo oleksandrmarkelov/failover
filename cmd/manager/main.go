@@ -47,14 +47,49 @@ func setupLogging(logFile string) (*os.File, error) {
 	return f, nil
 }
 
+// sendTelegramNotification sends a message to Telegram
+func sendTelegramNotification(botToken, chatID, message string) error {
+	if botToken == "" || chatID == "" {
+		return nil // Telegram not configured, skip silently
+	}
+
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", botToken)
+
+	payload := map[string]string{
+		"chat_id":    chatID,
+		"text":       message,
+		"parse_mode": "HTML",
+	}
+
+	jsonPayload, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal payload: %w", err)
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Post(url, "application/json", bytes.NewBuffer(jsonPayload))
+	if err != nil {
+		return fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("telegram API returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}
+
 // ValidatorState tracks the state of a validator
 type ValidatorState struct {
-	Name             string
-	Endpoint         string
-	LastResponse     *api.ValidatorStatusResponse
-	LastSuccess      time.Time
-	ConsecutiveFails int
-	IsReachable      bool
+	Name                string
+	Endpoint            string
+	LastResponse        *api.ValidatorStatusResponse
+	LastSuccess         time.Time
+	ConsecutiveFails    int
+	IsReachable         bool
+	UnreachableNotified bool // true if we already sent unreachable notification
 }
 
 // Manager manages failover between validators
@@ -97,6 +132,13 @@ func NewManager(cfg *config.ManagerConfig) *Manager {
 		},
 		ctx:    ctx,
 		cancel: cancel,
+	}
+}
+
+// notify sends a Telegram notification if configured
+func (m *Manager) notify(message string) {
+	if err := sendTelegramNotification(m.config.TelegramBotToken, m.config.TelegramChatID, message); err != nil {
+		log.Printf("Failed to send Telegram notification: %v", err)
 	}
 }
 
@@ -371,6 +413,10 @@ func (m *Manager) performFailover(reason string) error {
 	log.Printf("New active: [%s] %s", newActive.Name, newActive.Endpoint)
 	log.Printf("========================================")
 
+	// Send notification
+	m.notify(fmt.Sprintf("🔄 <b>FAILOVER COMPLETE</b>\n\nReason: %s\nFrom: %s (%s)\nTo: %s (%s)",
+		reason, oldActive.Name, oldActive.Endpoint, newActive.Name, newActive.Endpoint))
+
 	return nil
 }
 
@@ -392,10 +438,23 @@ func (m *Manager) checkAndFailover() {
 
 	if err != nil {
 		activeState.ConsecutiveFails++
+		wasReachable := activeState.IsReachable
 		activeState.IsReachable = false
 		log.Printf("[%s] UNREACHABLE (fail #%d): %v",
 			activeState.Name, activeState.ConsecutiveFails, err)
+		// Send notification only once when becoming unreachable
+		if wasReachable && !activeState.UnreachableNotified {
+			activeState.UnreachableNotified = true
+			m.notify(fmt.Sprintf("🔴 <b>SERVER UNREACHABLE</b>\n\n%s (%s)",
+				activeState.Name, activeState.Endpoint))
+		}
 	} else {
+		// Send notification if was unreachable and now reachable
+		if activeState.UnreachableNotified {
+			activeState.UnreachableNotified = false
+			m.notify(fmt.Sprintf("🟢 <b>SERVER BACK ONLINE</b>\n\n%s (%s)",
+				activeState.Name, activeState.Endpoint))
+		}
 		activeState.ConsecutiveFails = 0
 		activeState.IsReachable = true
 		activeState.LastSuccess = time.Now()
@@ -406,9 +465,22 @@ func (m *Manager) checkAndFailover() {
 	// Check passive validator (less frequently, just for status)
 	passiveStatus, passiveErr := m.checkValidator(ctx, passiveState)
 	if passiveErr != nil {
+		wasReachable := passiveState.IsReachable
 		passiveState.IsReachable = false
 		log.Printf("[%s] unreachable: %v", passiveState.Name, passiveErr)
+		// Send notification only once when becoming unreachable
+		if wasReachable && !passiveState.UnreachableNotified {
+			passiveState.UnreachableNotified = true
+			m.notify(fmt.Sprintf("🔴 <b>SERVER UNREACHABLE</b>\n\n%s (%s)",
+				passiveState.Name, passiveState.Endpoint))
+		}
 	} else {
+		// Send notification if was unreachable and now reachable
+		if passiveState.UnreachableNotified {
+			passiveState.UnreachableNotified = false
+			m.notify(fmt.Sprintf("🟢 <b>SERVER BACK ONLINE</b>\n\n%s (%s)",
+				passiveState.Name, passiveState.Endpoint))
+		}
 		passiveState.IsReachable = true
 		passiveState.LastSuccess = time.Now()
 		passiveState.LastResponse = passiveStatus

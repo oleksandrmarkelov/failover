@@ -61,6 +61,14 @@ type ManagerConfig struct {
 
 	// LogFile path to log file (empty for stdout)
 	LogFile string `json:"log_file"`
+
+	// TelegramBotToken is the Telegram bot token for notifications
+	// Get it from @BotFather
+	TelegramBotToken string `json:"telegram_bot_token"`
+
+	// TelegramChatID is the chat ID to send notifications to
+	// Can be a user ID, group ID, or channel ID (e.g., "-1001234567890")
+	TelegramChatID string `json:"telegram_chat_id"`
 }
 
 // ValidatorConfig is the configuration for the validator program

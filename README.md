@@ -41,6 +41,7 @@ A failover system for Solana validators written in Go. Consists of two programs:
 - Switches to passive if active doesn't respond (after N misses)
 - Checks if validator process is running
 - Checks slot difference (validator behind network)
+- Telegram notifications for critical events
 - Dry-run mode (test without actual failover)
 - Remote agent shutdown command (`--shutdown-agent`)
 
@@ -226,7 +227,9 @@ If gossip IP matches `local_ip`, the agent starts as active. Falls back to `is_a
   "slot_diff_threshold": 100,
   "request_timeout": "5s",
   "dry_run": true,
-  "log_file": "/var/log/failover-manager.log"
+  "log_file": "/var/log/failover-manager.log",
+  "telegram_bot_token": "YOUR_BOT_TOKEN",
+  "telegram_chat_id": "YOUR_CHAT_ID"
 }
 ```
 
@@ -307,6 +310,29 @@ DRY_RUN=false
 "dry_run": false
 ```
 
+## Telegram Notifications
+
+The manager can send notifications to Telegram for critical events:
+
+- 🔄 **Failover complete** - when failover succeeds (with reason and validator info)
+- 🔴 **Server unreachable** - when a validator becomes unreachable (sent only once)
+- 🟢 **Server back online** - when a validator becomes reachable again
+
+### Setup
+
+1. Create a bot with [@BotFather](https://t.me/BotFather) and get the token
+2. Get your chat ID (send a message to your bot, then visit `https://api.telegram.org/bot<TOKEN>/getUpdates`)
+3. Add to config:
+
+```json
+{
+  "telegram_bot_token": "123456789:ABCdefGHIjklMNOpqrsTUVwxyz",
+  "telegram_chat_id": "-1001234567890"
+}
+```
+
+For group chats, the chat ID is negative. For private chats, use your user ID.
+
 ## Safety Features
 
 1. **Dry-run mode**: Test without risk
@@ -315,7 +341,8 @@ DRY_RUN=false
 4. **Tower backup**: Continuous tower file backup prevents slashing
 5. **Tower removal**: Tower file deleted when becoming passive
 6. **Gossip-based detection**: Automatic active/passive detection
-7. **Logging**: All actions logged for audit
+7. **Telegram alerts**: Instant notifications for critical events
+8. **Logging**: All actions logged for audit
 
 ## Example Commands
 

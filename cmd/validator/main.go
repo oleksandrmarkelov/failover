@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -48,6 +49,20 @@ func setupLogging(logFile string) (*os.File, error) {
 	return f, nil
 }
 
+// getPublicIP detects the public IP of this server
+func getPublicIP() (string, error) {
+	// Try to get public IP by connecting to a public server
+	// This doesn't actually send any data, just determines the outbound IP
+	conn, err := net.Dial("udp", "8.8.8.8:80")
+	if err != nil {
+		return "", fmt.Errorf("failed to detect public IP: %w", err)
+	}
+	defer conn.Close()
+
+	localAddr := conn.LocalAddr().(*net.UDPAddr)
+	return localAddr.IP.String(), nil
+}
+
 // ValidatorAgent handles health check requests and manages failover
 type ValidatorAgent struct {
 	config *config.ValidatorConfig
@@ -85,6 +100,17 @@ func NewValidatorAgent(cfg *config.ValidatorConfig) *ValidatorAgent {
 		},
 		ctx:    ctx,
 		cancel: cancel,
+	}
+
+	// Auto-detect local IP if not configured
+	if cfg.LocalIP == "" {
+		detectedIP, err := getPublicIP()
+		if err != nil {
+			log.Printf("Warning: Failed to auto-detect public IP: %v", err)
+		} else {
+			cfg.LocalIP = detectedIP
+			log.Printf("Auto-detected public IP: %s", detectedIP)
+		}
 	}
 
 	// Try to auto-detect active state from gossip if configured

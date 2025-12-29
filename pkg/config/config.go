@@ -132,6 +132,7 @@ type ValidatorConfig struct {
 	GossipCheckCommand string `json:"gossip_check_command"`
 
 	// LocalIP is the IP address of this server to compare with gossip output
+	// Optional: if not set, will be auto-detected
 	// Example: "80.251.153.166"
 	LocalIP string `json:"local_ip"`
 

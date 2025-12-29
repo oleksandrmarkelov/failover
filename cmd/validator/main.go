@@ -383,16 +383,16 @@ func (va *ValidatorAgent) becomePassive(reason string) error {
 	}
 
 	// Step 4: Update identity symlink to point to unstaked identity
-	if va.config.IdentitySymlinkCommand != "" {
-		log.Printf("Step 4: Updating identity symlink...")
-		symlinkOutput, symlinkErr := va.executeCommand(va.config.IdentitySymlinkCommand, false)
+	if va.config.PassiveIdentitySymlinkCommand != "" {
+		log.Printf("Step 4: Updating identity symlink to passive identity...")
+		symlinkOutput, symlinkErr := va.executeCommand(va.config.PassiveIdentitySymlinkCommand, false)
 		if symlinkErr != nil {
 			log.Printf("WARNING: Failed to update identity symlink: %v", symlinkErr)
 		} else {
 			log.Printf("Identity symlink updated: %s", strings.TrimSpace(symlinkOutput))
 		}
 	} else {
-		log.Printf("Step 4: Skipping identity symlink update (identity_symlink_command not configured)")
+		log.Printf("Step 4: Skipping identity symlink update (passive_identity_symlink_command not configured)")
 	}
 
 	if err != nil {

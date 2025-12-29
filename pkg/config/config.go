@@ -108,9 +108,9 @@ type ValidatorConfig struct {
 	// Example: "solana-validator set-identity --require-tower /path/to/unstaked-identity.json"
 	IdentityRemoveCommand string `json:"identity_remove_command"`
 
-	// IdentitySymlinkCommand command to update identity symlink when becoming passive
+	// PassiveIdentitySymlinkCommand command to update identity symlink when becoming passive
 	// Example: "ln -sf /home/solana/solana_testnet/unstaked-identity.json /home/solana/solana_testnet/identity.json"
-	IdentitySymlinkCommand string `json:"identity_symlink_command"`
+	PassiveIdentitySymlinkCommand string `json:"passive_identity_symlink_command"`
 
 	// ActiveIdentitySymlinkCommand command to update identity symlink when becoming active
 	// Example: "ln -sf /home/solana/solana_testnet/testnet-validator-keypair.json /home/solana/solana_testnet/identity.json"

@@ -108,6 +108,10 @@ type ValidatorConfig struct {
 	// Example: "solana-validator set-identity --require-tower /path/to/unstaked-identity.json"
 	IdentityRemoveCommand string `json:"identity_remove_command"`
 
+	// IdentitySymlinkCommand command to update identity symlink when becoming passive
+	// Example: "ln -sf /home/solana/solana_testnet/unstaked-identity.json /home/solana/solana_testnet/identity.json"
+	IdentitySymlinkCommand string `json:"identity_symlink_command"`
+
 	// TowerFilePath path to tower file to remove when becoming passive
 	// Example: "/home/solana/solana_testnet/validator-ledger/tower-1_9-DQx6XD5fWQ2Pbkg4Fi4gVzLbGg6c4ST7ZgXTawZZAXEY.bin"
 	TowerFilePath string `json:"tower_file_path"`

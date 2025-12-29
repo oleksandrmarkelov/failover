@@ -369,6 +369,19 @@ func (va *ValidatorAgent) becomePassive(reason string) error {
 		log.Printf("Step 3: Skipping tower file removal (tower_file_path not configured)")
 	}
 
+	// Step 4: Update identity symlink to point to unstaked identity
+	if va.config.IdentitySymlinkCommand != "" {
+		log.Printf("Step 4: Updating identity symlink...")
+		symlinkOutput, symlinkErr := va.executeCommand(va.config.IdentitySymlinkCommand, false)
+		if symlinkErr != nil {
+			log.Printf("WARNING: Failed to update identity symlink: %v", symlinkErr)
+		} else {
+			log.Printf("Identity symlink updated: %s", strings.TrimSpace(symlinkOutput))
+		}
+	} else {
+		log.Printf("Step 4: Skipping identity symlink update (identity_symlink_command not configured)")
+	}
+
 	if err != nil {
 		log.Printf("=== NOW PASSIVE (with identity removal error) ===")
 		return fmt.Errorf("failed to remove identity: %w", err)

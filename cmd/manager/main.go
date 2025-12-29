@@ -142,6 +142,88 @@ func (m *Manager) notify(message string) {
 	}
 }
 
+// dailyStatusReportLoop sends a daily status report at noon
+func (m *Manager) dailyStatusReportLoop() {
+	for {
+		// Calculate time until next noon
+		now := time.Now()
+		noon := time.Date(now.Year(), now.Month(), now.Day(), 12, 0, 0, 0, now.Location())
+		if now.After(noon) {
+			// If it's past noon today, schedule for tomorrow
+			noon = noon.Add(24 * time.Hour)
+		}
+		timeUntilNoon := noon.Sub(now)
+
+		log.Printf("Next daily status report scheduled in %v", timeUntilNoon.Round(time.Minute))
+
+		select {
+		case <-m.ctx.Done():
+			return
+		case <-time.After(timeUntilNoon):
+			m.sendDailyStatusReport()
+		}
+	}
+}
+
+// sendDailyStatusReport sends a status report to Telegram
+func (m *Manager) sendDailyStatusReport() {
+	m.mu.RLock()
+	activeIdx := m.activeIdx
+	validators := m.validators
+	networkSlot := m.networkSlot
+	m.mu.RUnlock()
+
+	activeState := validators[activeIdx]
+	passiveState := validators[1-activeIdx]
+
+	// Build status message
+	activeStatus := "🟢 Online"
+	if !activeState.IsReachable {
+		activeStatus = "🔴 Unreachable"
+	}
+
+	passiveStatus := "🟢 Online"
+	if !passiveState.IsReachable {
+		passiveStatus = "🔴 Unreachable"
+	}
+
+	var activeSlot, passiveSlot string
+	if activeState.LastResponse != nil {
+		activeSlot = fmt.Sprintf("%d", activeState.LastResponse.ValidatorSlot)
+	} else {
+		activeSlot = "N/A"
+	}
+	if passiveState.LastResponse != nil {
+		passiveSlot = fmt.Sprintf("%d", passiveState.LastResponse.ValidatorSlot)
+	} else {
+		passiveSlot = "N/A"
+	}
+
+	message := fmt.Sprintf(`📊 <b>DAILY STATUS REPORT</b>
+
+🕐 %s
+
+<b>Active Validator:</b> %s
+Status: %s
+Endpoint: %s
+Slot: %s
+
+<b>Passive Validator:</b> %s
+Status: %s
+Endpoint: %s
+Slot: %s
+
+<b>Network Slot:</b> %d
+<b>Manager:</b> 🟢 Running`,
+		time.Now().Format("2006-01-02 15:04:05"),
+		activeState.Name, activeStatus, activeState.Endpoint, activeSlot,
+		passiveState.Name, passiveStatus, passiveState.Endpoint, passiveSlot,
+		networkSlot)
+
+	m.notify(message)
+	log.Printf("Daily status report sent")
+}
+
 // fetchNetworkSlot fetches the current network slot from the cluster RPC
 func (m *Manager) fetchNetworkSlot(ctx context.Context) (uint64, error) {
 	slot, err := m.clusterClient.GetSlot(ctx, rpc.CommitmentProcessed)
@@ -566,6 +648,9 @@ func (m *Manager) Monitor() error {
 
 	// Start network slot monitoring loop
 	go m.networkSlotLoop()
+
+	// Start daily status report loop
+	go m.dailyStatusReportLoop()
 
 	// Initial check
 	m.checkAndFailover()

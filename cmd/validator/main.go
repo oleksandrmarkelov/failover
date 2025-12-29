@@ -194,6 +194,24 @@ func (va *ValidatorAgent) isProcessHealthy() (running bool, uptime int64, health
 	return running, uptime, healthy
 }
 
+// getGossipCheckCommand returns the gossip check command with validator_identity substituted
+func (va *ValidatorAgent) getGossipCheckCommand() string {
+	cmd := va.config.GossipCheckCommand
+	if va.config.ValidatorIdentity != "" {
+		cmd = strings.ReplaceAll(cmd, "{validator_identity}", va.config.ValidatorIdentity)
+	}
+	return cmd
+}
+
+// getTowerFilePath returns the tower file path with validator_identity substituted
+func (va *ValidatorAgent) getTowerFilePath() string {
+	path := va.config.TowerFilePath
+	if va.config.ValidatorIdentity != "" {
+		path = strings.ReplaceAll(path, "{validator_identity}", va.config.ValidatorIdentity)
+	}
+	return path
+}
+
 // checkActiveFromGossip checks if this server is the active validator by comparing
 // the IP in gossip output with the local IP
 // Returns: isActive, error (nil error means check was successful)
@@ -202,7 +220,8 @@ func (va *ValidatorAgent) checkActiveFromGossip() (bool, error) {
 		return false, fmt.Errorf("gossip check not configured (need gossip_check_command and local_ip)")
 	}
 
-	cmd := exec.Command("bash", "-c", va.config.GossipCheckCommand)
+	gossipCmd := va.getGossipCheckCommand()
+	cmd := exec.Command("bash", "-c", gossipCmd)
 	output, err := cmd.Output()
 	if err != nil {
 		// grep returns exit code 1 if no match found
@@ -397,14 +416,15 @@ func (va *ValidatorAgent) becomePassive(reason string) error {
 	}
 
 	// Step 3: Remove tower file to prevent stale tower usage
-	if va.config.TowerFilePath != "" {
-		log.Printf("Step 3: Removing tower file: %s", va.config.TowerFilePath)
+	towerFilePath := va.getTowerFilePath()
+	if towerFilePath != "" {
+		log.Printf("Step 3: Removing tower file: %s", towerFilePath)
 		if va.config.DryRun {
-			log.Printf("[DRY-RUN] Would remove tower file: %s", va.config.TowerFilePath)
+			log.Printf("[DRY-RUN] Would remove tower file: %s", towerFilePath)
 		} else {
-			if removeErr := os.Remove(va.config.TowerFilePath); removeErr != nil {
+			if removeErr := os.Remove(towerFilePath); removeErr != nil {
 				if os.IsNotExist(removeErr) {
-					log.Printf("Tower file does not exist (already removed): %s", va.config.TowerFilePath)
+					log.Printf("Tower file does not exist (already removed): %s", towerFilePath)
 				} else {
 					log.Printf("WARNING: Failed to remove tower file: %v", removeErr)
 				}

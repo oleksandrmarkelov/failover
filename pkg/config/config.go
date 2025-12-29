@@ -117,16 +117,18 @@ type ValidatorConfig struct {
 	ActiveIdentitySymlinkCommand string `json:"active_identity_symlink_command"`
 
 	// TowerFilePath path to tower file to remove when becoming passive
-	// Example: "/home/solana/solana_testnet/validator-ledger/tower-1_9-DQx6XD5fWQ2Pbkg4Fi4gVzLbGg6c4ST7ZgXTawZZAXEY.bin"
+	// Use {validator_identity} as placeholder for the validator identity
+	// Example: "/home/solana/solana_testnet/validator-ledger/tower-1_9-{validator_identity}.bin"
 	TowerFilePath string `json:"tower_file_path"`
 
-	// ValidatorIdentity is the public key of the validator to check in gossip
+	// ValidatorIdentity is the public key of the validator
+	// Used to substitute {validator_identity} in gossip_check_command and tower_file_path
 	// Example: "DQx6XD5fWQ2Pbkg4Fi4gVzLbGg6c4ST7ZgXTawZZAXEY"
 	ValidatorIdentity string `json:"validator_identity"`
 
 	// GossipCheckCommand command to check gossip for validator identity
-	// Should output the gossip line for the validator identity
-	// Example: "solana -ut gossip | grep DQx6XD5fWQ2Pbkg4Fi4gVzLbGg6c4ST7ZgXTawZZAXEY"
+	// Use {validator_identity} as placeholder for the validator identity
+	// Example: "solana -ut gossip | grep {validator_identity}"
 	GossipCheckCommand string `json:"gossip_check_command"`
 
 	// LocalIP is the IP address of this server to compare with gossip output

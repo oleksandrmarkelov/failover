@@ -299,8 +299,21 @@ func (va *ValidatorAgent) becomeActive(reason string) error {
 		return fmt.Errorf("failed to restore tower: %w", err)
 	}
 
-	// Step 2: Change identity
-	log.Printf("Step 2: Changing validator identity...")
+	// Step 2: Update identity symlink to point to active identity
+	if va.config.ActiveIdentitySymlinkCommand != "" {
+		log.Printf("Step 2: Updating identity symlink to active identity...")
+		symlinkOutput, symlinkErr := va.executeCommand(va.config.ActiveIdentitySymlinkCommand, false)
+		if symlinkErr != nil {
+			log.Printf("WARNING: Failed to update identity symlink: %v", symlinkErr)
+		} else {
+			log.Printf("Identity symlink updated: %s", strings.TrimSpace(symlinkOutput))
+		}
+	} else {
+		log.Printf("Step 2: Skipping identity symlink update (active_identity_symlink_command not configured)")
+	}
+
+	// Step 3: Change identity
+	log.Printf("Step 3: Changing validator identity...")
 	output, err := va.executeCommand(va.config.IdentityChangeCommand, false)
 	if err != nil {
 		return fmt.Errorf("failed to change identity: %w", err)

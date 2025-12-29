@@ -112,6 +112,10 @@ type ValidatorConfig struct {
 	// Example: "ln -sf /home/solana/solana_testnet/unstaked-identity.json /home/solana/solana_testnet/identity.json"
 	IdentitySymlinkCommand string `json:"identity_symlink_command"`
 
+	// ActiveIdentitySymlinkCommand command to update identity symlink when becoming active
+	// Example: "ln -sf /home/solana/solana_testnet/testnet-validator-keypair.json /home/solana/solana_testnet/identity.json"
+	ActiveIdentitySymlinkCommand string `json:"active_identity_symlink_command"`
+
 	// TowerFilePath path to tower file to remove when becoming passive
 	// Example: "/home/solana/solana_testnet/validator-ledger/tower-1_9-DQx6XD5fWQ2Pbkg4Fi4gVzLbGg6c4ST7ZgXTawZZAXEY.bin"
 	TowerFilePath string `json:"tower_file_path"`

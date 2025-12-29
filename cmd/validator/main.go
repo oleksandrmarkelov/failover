@@ -100,7 +100,41 @@ func NewValidatorAgent(cfg *config.ValidatorConfig) *ValidatorAgent {
 		}
 	}
 
+	// If starting as passive, ensure identity symlink and identity are set to passive
+	if !agent.isActive {
+		agent.ensurePassiveIdentity()
+	}
+
 	return agent
+}
+
+// ensurePassiveIdentity updates symlink and identity to passive state on startup
+func (va *ValidatorAgent) ensurePassiveIdentity() {
+	log.Printf("Starting as passive - ensuring passive identity configuration...")
+
+	// Update identity symlink to passive
+	if va.config.PassiveIdentitySymlinkCommand != "" {
+		log.Printf("Updating identity symlink to passive identity...")
+		output, err := va.executeCommand(va.config.PassiveIdentitySymlinkCommand, false)
+		if err != nil {
+			log.Printf("WARNING: Failed to update identity symlink: %v", err)
+		} else {
+			log.Printf("Identity symlink updated: %s", strings.TrimSpace(output))
+		}
+	}
+
+	// Switch to passive identity
+	if va.config.IdentityRemoveCommand != "" {
+		log.Printf("Switching to passive identity...")
+		output, err := va.executeCommand(va.config.IdentityRemoveCommand, false)
+		if err != nil {
+			log.Printf("WARNING: Failed to switch to passive identity: %v", err)
+		} else {
+			log.Printf("Identity switched to passive: %s", strings.TrimSpace(output))
+		}
+	}
+
+	log.Printf("Passive identity configuration complete")
 }
 
 // isProcessRunning checks if agave-validator process is running (Ubuntu/Linux)

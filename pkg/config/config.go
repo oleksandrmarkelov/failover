@@ -136,6 +136,11 @@ type ValidatorConfig struct {
 	// Example: "80.251.153.166"
 	LocalIP string `json:"local_ip"`
 
+	// ValidatorRestartCommand command to restart the validator service
+	// Used when identity switch fails during passive startup
+	// Example: "sudo systemctl restart solana"
+	ValidatorRestartCommand string `json:"validator_restart_command"`
+
 	// DryRun if true, don't execute commands, just log them
 	DryRun bool `json:"dry_run"`
 

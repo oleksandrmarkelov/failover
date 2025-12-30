@@ -152,7 +152,7 @@ func (va *ValidatorAgent) ensurePassiveIdentity() {
 	// Switch to passive identity (with retry since RPC may not be available immediately)
 	if va.config.IdentityRemoveCommand != "" {
 		log.Printf("Switching to passive identity...")
-		const maxRetries = 5
+		const maxRetries = 2
 		const retryDelay = 5 * time.Second
 		var output string
 		var err error
@@ -166,8 +166,23 @@ func (va *ValidatorAgent) ensurePassiveIdentity() {
 			if attempt < maxRetries {
 				log.Printf("WARNING: Passive identity switch attempt %d/%d failed: %v. Retrying in %v...", attempt, maxRetries, err, retryDelay)
 				time.Sleep(retryDelay)
+			}
+		}
+
+		// If identity switch failed after all retries, restart the validator
+		// This ensures the validator starts fresh with the passive identity symlink
+		if err != nil {
+			log.Printf("WARNING: Failed to switch to passive identity after %d attempts: %v", maxRetries, err)
+			if va.config.ValidatorRestartCommand != "" {
+				log.Printf("Restarting validator service to apply passive identity...")
+				restartOutput, restartErr := va.executeCommand(va.config.ValidatorRestartCommand, false)
+				if restartErr != nil {
+					log.Printf("ERROR: Failed to restart validator service: %v", restartErr)
+				} else {
+					log.Printf("Validator service restarted: %s", strings.TrimSpace(restartOutput))
+				}
 			} else {
-				log.Printf("WARNING: Failed to switch to passive identity after %d attempts: %v", maxRetries, err)
+				log.Printf("WARNING: validator_restart_command not configured, cannot restart validator")
 			}
 		}
 	}

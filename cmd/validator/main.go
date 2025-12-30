@@ -452,9 +452,22 @@ func (va *ValidatorAgent) becomePassive(reason string) error {
 		log.Printf("Warning: tower backup failed: %v", err)
 	}
 
-	// Step 2: Remove identity (with retry since RPC may not be available immediately)
-	log.Printf("Step 2: Removing validator identity...")
-	const maxRetries = 5
+	// Step 2: Update identity symlink to point to unstaked identity
+	if va.config.PassiveIdentitySymlinkCommand != "" {
+		log.Printf("Step 2: Updating identity symlink to passive identity...")
+		symlinkOutput, symlinkErr := va.executeCommand(va.config.PassiveIdentitySymlinkCommand, false)
+		if symlinkErr != nil {
+			log.Printf("WARNING: Failed to update identity symlink: %v", symlinkErr)
+		} else {
+			log.Printf("Identity symlink updated: %s", strings.TrimSpace(symlinkOutput))
+		}
+	} else {
+		log.Printf("Step 2: Skipping identity symlink update (passive_identity_symlink_command not configured)")
+	}
+
+	// Step 3: Remove identity (with retry since RPC may not be available immediately)
+	log.Printf("Step 3: Removing validator identity...")
+	const maxRetries = 2
 	const retryDelay = 5 * time.Second
 	var output string
 	var err error
@@ -482,10 +495,10 @@ func (va *ValidatorAgent) becomePassive(reason string) error {
 		log.Printf("Identity remove output: %s", strings.TrimSpace(output))
 	}
 
-	// Step 3: Remove tower file to prevent stale tower usage
+	// Step 4: Remove tower file to prevent stale tower usage
 	towerFilePath := va.getTowerFilePath()
 	if towerFilePath != "" {
-		log.Printf("Step 3: Removing tower file: %s", towerFilePath)
+		log.Printf("Step 4: Removing tower file: %s", towerFilePath)
 		if va.config.DryRun {
 			log.Printf("[DRY-RUN] Would remove tower file: %s", towerFilePath)
 		} else {
@@ -500,20 +513,7 @@ func (va *ValidatorAgent) becomePassive(reason string) error {
 			}
 		}
 	} else {
-		log.Printf("Step 3: Skipping tower file removal (tower_file_path not configured)")
-	}
-
-	// Step 4: Update identity symlink to point to unstaked identity
-	if va.config.PassiveIdentitySymlinkCommand != "" {
-		log.Printf("Step 4: Updating identity symlink to passive identity...")
-		symlinkOutput, symlinkErr := va.executeCommand(va.config.PassiveIdentitySymlinkCommand, false)
-		if symlinkErr != nil {
-			log.Printf("WARNING: Failed to update identity symlink: %v", symlinkErr)
-		} else {
-			log.Printf("Identity symlink updated: %s", strings.TrimSpace(symlinkOutput))
-		}
-	} else {
-		log.Printf("Step 4: Skipping identity symlink update (passive_identity_symlink_command not configured)")
+		log.Printf("Step 4: Skipping tower file removal (tower_file_path not configured)")
 	}
 
 	if err != nil {

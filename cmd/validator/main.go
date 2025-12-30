@@ -149,14 +149,26 @@ func (va *ValidatorAgent) ensurePassiveIdentity() {
 		}
 	}
 
-	// Switch to passive identity
+	// Switch to passive identity (with retry since RPC may not be available immediately)
 	if va.config.IdentityRemoveCommand != "" {
 		log.Printf("Switching to passive identity...")
-		output, err := va.executeCommand(va.config.IdentityRemoveCommand, false)
-		if err != nil {
-			log.Printf("WARNING: Failed to switch to passive identity: %v", err)
-		} else {
-			log.Printf("Identity switched to passive: %s", strings.TrimSpace(output))
+		const maxRetries = 5
+		const retryDelay = 5 * time.Second
+		var output string
+		var err error
+
+		for attempt := 1; attempt <= maxRetries; attempt++ {
+			output, err = va.executeCommand(va.config.IdentityRemoveCommand, false)
+			if err == nil {
+				log.Printf("Identity switched to passive: %s", strings.TrimSpace(output))
+				break
+			}
+			if attempt < maxRetries {
+				log.Printf("WARNING: Passive identity switch attempt %d/%d failed: %v. Retrying in %v...", attempt, maxRetries, err, retryDelay)
+				time.Sleep(retryDelay)
+			} else {
+				log.Printf("WARNING: Failed to switch to passive identity after %d attempts: %v", maxRetries, err)
+			}
 		}
 	}
 

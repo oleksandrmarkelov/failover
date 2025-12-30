@@ -592,8 +592,14 @@ func (m *Manager) checkAndFailover() {
 			return
 		}
 
-		if passiveStatus != nil && !passiveStatus.ProcessRunning {
-			log.Printf("WARNING: Passive validator process not running. Failover may fail!")
+		// Check if passive is healthy before failover
+		if passiveStatus == nil || !m.isValidatorHealthy(passiveStatus) {
+			passiveReason := "unknown"
+			if passiveStatus != nil {
+				passiveReason = m.getUnhealthyReason(passiveState, passiveStatus)
+			}
+			log.Printf("CRITICAL: Passive validator is not healthy (%s). Cannot failover!", passiveReason)
+			return
 		}
 
 		if err := m.performFailover(failoverReason); err != nil {

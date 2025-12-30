@@ -425,9 +425,23 @@ func (va *ValidatorAgent) becomePassive(reason string) error {
 		log.Printf("Warning: tower backup failed: %v", err)
 	}
 
-	// Step 2: Remove identity
+	// Step 2: Remove identity (with retry since RPC may not be available immediately)
 	log.Printf("Step 2: Removing validator identity...")
-	output, err := va.executeCommand(va.config.IdentityRemoveCommand, false)
+	const maxRetries = 5
+	const retryDelay = 5 * time.Second
+	var output string
+	var err error
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		output, err = va.executeCommand(va.config.IdentityRemoveCommand, false)
+		if err == nil {
+			break
+		}
+		if attempt < maxRetries {
+			log.Printf("WARNING: Identity removal attempt %d/%d failed: %v. Retrying in %v...", attempt, maxRetries, err, retryDelay)
+			time.Sleep(retryDelay)
+		}
+	}
 
 	// Mark as passive regardless of command result
 	// This ensures we stop writing tower files even if the command fails

@@ -468,7 +468,7 @@ func (va *ValidatorAgent) becomePassive(reason string) error {
 	// Step 3: Remove identity (with retry since RPC may not be available immediately)
 	log.Printf("Step 3: Removing validator identity...")
 	const maxRetries = 2
-	const retryDelay = 5 * time.Second
+	const retryDelay = 3 * time.Second
 	var output string
 	var err error
 
@@ -483,17 +483,32 @@ func (va *ValidatorAgent) becomePassive(reason string) error {
 		}
 	}
 
+	// If identity removal failed after all retries, restart the validator
+	// Restarting with passive identity symlink achieves the same result
+	if err != nil {
+		log.Printf("WARNING: Failed to remove identity after %d attempts: %v", maxRetries, err)
+		if va.config.ValidatorRestartCommand != "" {
+			log.Printf("Restarting validator service to apply passive identity...")
+			restartOutput, restartErr := va.executeCommand(va.config.ValidatorRestartCommand, false)
+			if restartErr != nil {
+				log.Printf("ERROR: Failed to restart validator service: %v", restartErr)
+			} else {
+				log.Printf("Validator service restarted: %s", strings.TrimSpace(restartOutput))
+				// Restart with passive symlink is equivalent to successful identity removal
+				err = nil
+			}
+		} else {
+			log.Printf("WARNING: validator_restart_command not configured, cannot restart validator")
+		}
+	} else {
+		log.Printf("Identity remove output: %s", strings.TrimSpace(output))
+	}
+
 	// Mark as passive regardless of command result
 	// This ensures we stop writing tower files even if the command fails
 	va.mu.Lock()
 	va.isActive = false
 	va.mu.Unlock()
-
-	if err != nil {
-		log.Printf("WARNING: Failed to remove identity: %v", err)
-	} else {
-		log.Printf("Identity remove output: %s", strings.TrimSpace(output))
-	}
 
 	// Step 4: Remove tower file to prevent stale tower usage
 	towerFilePath := va.getTowerFilePath()

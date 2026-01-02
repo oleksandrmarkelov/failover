@@ -480,9 +480,6 @@ func (m *Manager) performFailover(reason string) error {
 
 // checkAndFailover performs health check and failover if needed
 func (m *Manager) checkAndFailover() {
-	ctx, cancel := context.WithTimeout(m.ctx, m.config.RequestTimeout.Duration())
-	defer cancel()
-
 	m.mu.RLock()
 	activeIdx := m.activeIdx
 	m.mu.RUnlock()
@@ -490,9 +487,11 @@ func (m *Manager) checkAndFailover() {
 	activeState := m.validators[activeIdx]
 	passiveState := m.validators[1-activeIdx]
 
-	// Check active validator
+	// Check active validator (with its own timeout)
 	log.Printf("Checking [%s] (%s)...", activeState.Name, activeState.Endpoint)
-	activeStatus, err := m.checkValidator(ctx, activeState)
+	activeCtx, activeCancel := context.WithTimeout(m.ctx, m.config.RequestTimeout.Duration())
+	activeStatus, err := m.checkValidator(activeCtx, activeState)
+	activeCancel()
 
 	if err != nil {
 		activeState.ConsecutiveFails++
@@ -520,8 +519,10 @@ func (m *Manager) checkAndFailover() {
 		m.printValidatorStatus(activeState, activeStatus)
 	}
 
-	// Check passive validator (less frequently, just for status)
-	passiveStatus, passiveErr := m.checkValidator(ctx, passiveState)
+	// Check passive validator (with its own timeout)
+	passiveCtx, passiveCancel := context.WithTimeout(m.ctx, m.config.RequestTimeout.Duration())
+	passiveStatus, passiveErr := m.checkValidator(passiveCtx, passiveState)
+	passiveCancel()
 	if passiveErr != nil {
 		wasReachable := passiveState.IsReachable
 		passiveState.IsReachable = false

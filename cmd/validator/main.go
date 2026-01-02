@@ -611,18 +611,21 @@ func (va *ValidatorAgent) handleStatus(w http.ResponseWriter, r *http.Request) {
 	response.LastTowerBackup = va.lastTowerBackup.Unix()
 	va.mu.RUnlock()
 
-	// Backup tower file on each status check (only if active)
-	// This happens every time manager pings us (every 2 seconds)
-	if response.IsActive && response.ProcessRunning {
-		if err := va.backupTower(); err != nil {
-			log.Printf("Tower backup warning: %v", err)
-		}
-	}
-
 	log.Printf("Status request: ProcessRunning=%v, Slot=%d, Active=%v, Healthy=%v",
 		response.ProcessRunning, response.ValidatorSlot, response.IsActive, response.IsHealthy)
 
+	// Send response immediately, don't block on tower backup
 	va.sendJSON(w, response)
+
+	// Backup tower file after sending response (only if active)
+	// Run in goroutine so slow etcd doesn't block next request
+	if response.IsActive && response.ProcessRunning {
+		go func() {
+			if err := va.backupTower(); err != nil {
+				log.Printf("Tower backup warning: %v", err)
+			}
+		}()
+	}
 }
 
 // handlePeerStatus handles the /peer-status endpoint (from other validator)

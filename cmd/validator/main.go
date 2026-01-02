@@ -21,33 +21,9 @@ import (
 
 	"github.com/failover/pkg/api"
 	"github.com/failover/pkg/config"
+	"github.com/failover/pkg/logging"
 	"github.com/gagliardetto/solana-go/rpc"
 )
-
-// setupLogging configures logging to both console and file
-func setupLogging(logFile string) (*os.File, error) {
-	// Set log format with timestamp
-	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
-
-	if logFile == "" {
-		// Console only
-		log.SetOutput(os.Stdout)
-		return nil, nil
-	}
-
-	// Open log file (append mode, create if not exists)
-	f, err := os.OpenFile(logFile, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0644)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open log file: %w", err)
-	}
-
-	// Write to both console and file
-	multiWriter := io.MultiWriter(os.Stdout, f)
-	log.SetOutput(multiWriter)
-
-	log.Printf("Logging to console and file: %s", logFile)
-	return f, nil
-}
 
 // getPublicIP detects the public IP of this server
 func getPublicIP() (string, error) {
@@ -942,12 +918,12 @@ func main() {
 	if env := os.Getenv("VALIDATOR_LOG_FILE"); env != "" {
 		logFilePath = env
 	}
-	logFileHandle, err := setupLogging(logFilePath)
-	if logFileHandle != nil {
-		defer logFileHandle.Close()
-	}
+	logCloser, err := logging.SetupLogging(logFilePath)
 	if err != nil {
 		log.Fatalf("Failed to setup logging: %v", err)
+	}
+	if logCloser != nil {
+		defer logCloser.Close()
 	}
 
 	agent := NewValidatorAgent(cfg)

@@ -725,8 +725,22 @@ func (va *ValidatorAgent) handleShutdown(w http.ResponseWriter, r *http.Request)
 	go func() {
 		time.Sleep(100 * time.Millisecond) // Give time for response to be sent
 		log.Printf("=== AGENT SHUTTING DOWN === Reason: %s", cmd.Reason)
-		va.Stop()
-		os.Exit(0)
+
+		// Use systemd stop command if configured, otherwise exit directly
+		if va.config.AgentStopCommand != "" {
+			log.Printf("Executing stop command: %s", va.config.AgentStopCommand)
+			output, err := va.executeCommand(va.config.AgentStopCommand, false)
+			if err != nil {
+				log.Printf("Stop command failed: %v, falling back to os.Exit", err)
+				va.Stop()
+				os.Exit(0)
+			}
+			log.Printf("Stop command output: %s", output)
+			// systemd will handle the process termination
+		} else {
+			va.Stop()
+			os.Exit(0)
+		}
 	}()
 }
 

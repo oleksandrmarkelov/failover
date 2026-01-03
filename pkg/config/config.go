@@ -141,6 +141,11 @@ type ValidatorConfig struct {
 	// Example: "sudo systemctl restart solana"
 	ValidatorRestartCommand string `json:"validator_restart_command"`
 
+	// AgentStopCommand command to stop the agent service
+	// Used when manager sends shutdown command
+	// Example: "sudo systemctl stop failover-agent"
+	AgentStopCommand string `json:"agent_stop_command"`
+
 	// DryRun if true, don't execute commands, just log them
 	DryRun bool `json:"dry_run"`
 

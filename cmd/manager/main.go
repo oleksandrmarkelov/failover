@@ -118,31 +118,36 @@ func (m *Manager) notify(message string) {
 	}
 }
 
-// dailyStatusReportLoop sends a daily status report at noon
-func (m *Manager) dailyStatusReportLoop() {
+// statusReportLoop sends a status report every 4 hours (at 00:00, 04:00, 08:00, 12:00, 16:00, 20:00)
+func (m *Manager) statusReportLoop() {
 	for {
-		// Calculate time until next noon
+		// Calculate time until next 4-hour mark
 		now := time.Now()
-		noon := time.Date(now.Year(), now.Month(), now.Day(), 12, 0, 0, 0, now.Location())
-		if now.After(noon) {
-			// If it's past noon today, schedule for tomorrow
-			noon = noon.Add(24 * time.Hour)
-		}
-		timeUntilNoon := noon.Sub(now)
+		currentHour := now.Hour()
+		nextReportHour := ((currentHour / 4) + 1) * 4 // Next multiple of 4
 
-		log.Printf("Next daily status report scheduled in %v", timeUntilNoon.Round(time.Minute))
+		var nextReport time.Time
+		if nextReportHour >= 24 {
+			// Next report is tomorrow at 00:00
+			nextReport = time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, now.Location())
+		} else {
+			nextReport = time.Date(now.Year(), now.Month(), now.Day(), nextReportHour, 0, 0, 0, now.Location())
+		}
+		timeUntilReport := nextReport.Sub(now)
+
+		log.Printf("Next status report scheduled in %v", timeUntilReport.Round(time.Minute))
 
 		select {
 		case <-m.ctx.Done():
 			return
-		case <-time.After(timeUntilNoon):
-			m.sendDailyStatusReport()
+		case <-time.After(timeUntilReport):
+			m.sendStatusReport()
 		}
 	}
 }
 
-// sendDailyStatusReport sends a status report to Telegram
-func (m *Manager) sendDailyStatusReport() {
+// sendStatusReport sends a status report to Telegram
+func (m *Manager) sendStatusReport() {
 	m.mu.RLock()
 	activeIdx := m.activeIdx
 	validators := m.validators
@@ -175,7 +180,7 @@ func (m *Manager) sendDailyStatusReport() {
 		passiveSlot = "N/A"
 	}
 
-	message := fmt.Sprintf(`📊 <b>DAILY STATUS REPORT</b>
+	message := fmt.Sprintf(`📊 <b>STATUS REPORT</b>
 
 🕐 %s
 
@@ -197,7 +202,7 @@ Slot: %s
 		networkSlot)
 
 	m.notify(message)
-	log.Printf("Daily status report sent")
+	log.Printf("Status report sent")
 }
 
 // fetchNetworkSlot fetches the current network slot from the cluster RPC
@@ -634,8 +639,8 @@ func (m *Manager) Monitor() error {
 	// Start network slot monitoring loop
 	go m.networkSlotLoop()
 
-	// Start daily status report loop
-	go m.dailyStatusReportLoop()
+	// Start status report loop (every 4 hours)
+	go m.statusReportLoop()
 
 	// Initial check
 	m.checkAndFailover()

@@ -4,6 +4,73 @@ A failover system for Solana validators written in Go. Consists of two programs:
 - **Manager** - runs on manager server, monitors validators and triggers failover
 - **Validator Agent** - runs on each validator server, responds to health checks and executes failover commands
 
+## Prerequisites
+
+Before setting up the failover system, ensure the following requirements are met on each validator server:
+
+### 1. etcd Installation
+
+etcd must be installed and running as a service on each server for tower file synchronization.
+
+```bash
+# Install etcd
+sudo apt update
+sudo apt install etcd
+
+# Enable and start the service
+sudo systemctl enable etcd
+sudo systemctl start etcd
+
+# Verify it's running
+sudo systemctl status etcd
+etcdctl put test "hello" && etcdctl get test
+```
+
+### 2. Validator Snapshots
+
+Snapshots must be enabled on your Solana validator to allow faster restarts and state recovery. Add to your validator startup command:
+
+```bash
+--snapshots /path/to/snapshots \
+--snapshot-interval-slots 500
+```
+
+### 3. Autostart Configuration
+
+All services should be configured to start automatically after a system restart:
+
+```bash
+# Enable autostart for Solana validator
+sudo systemctl enable solana
+
+# Enable autostart for failover agent
+sudo systemctl enable failover-agent
+
+# Enable autostart for etcd
+sudo systemctl enable etcd
+
+# (On manager server) Enable autostart for failover manager
+sudo systemctl enable failover-manager
+```
+
+Verify autostart is configured:
+```bash
+sudo systemctl is-enabled solana failover-agent etcd
+```
+
+### 4. Sudoers Configuration
+
+The failover agent needs to execute certain commands with sudo without password prompts:
+
+```bash
+sudo visudo
+```
+
+Add the following line (replace `solana` with your user):
+```
+solana ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop failover-agent, /usr/bin/systemctl start failover-agent, /usr/bin/systemctl restart failover-agent
+```
+
 ## Architecture
 
 ```

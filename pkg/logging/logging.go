@@ -16,7 +16,6 @@ type DailyLogger struct {
 	baseLogPath string
 	currentFile *os.File
 	currentDate string
-	multiWriter io.Writer
 }
 
 // NewDailyLogger creates a new logger that rotates log files daily
@@ -46,6 +45,11 @@ func (dl *DailyLogger) rotateIfNeeded() error {
 	dl.mu.Lock()
 	defer dl.mu.Unlock()
 
+	return dl.rotateIfNeededLocked()
+}
+
+// rotateIfNeededLocked performs rotation while lock is already held
+func (dl *DailyLogger) rotateIfNeededLocked() error {
 	today := time.Now().Format("2006-01-02")
 
 	// If we already have a file for today, no rotation needed
@@ -67,31 +71,36 @@ func (dl *DailyLogger) rotateIfNeeded() error {
 
 	dl.currentFile = f
 	dl.currentDate = today
-	dl.multiWriter = io.MultiWriter(os.Stdout, f)
-	log.SetOutput(dl.multiWriter)
 
-	log.Printf("Logging to console and file: %s", logFileName)
+	// Write rotation message directly to both outputs
+	msg := fmt.Sprintf("Logging to console and file: %s\n", logFileName)
+	os.Stdout.WriteString(msg)
+	f.WriteString(msg)
+
 	return nil
 }
 
 // Write implements io.Writer interface with automatic daily rotation
 func (dl *DailyLogger) Write(p []byte) (n int, err error) {
-	// Check if we need to rotate (date changed)
-	today := time.Now().Format("2006-01-02")
-	if dl.currentDate != today {
-		if err := dl.rotateIfNeeded(); err != nil {
-			// Log rotation failed, write to stdout only
-			return os.Stdout.Write(p)
-		}
-	}
-
 	dl.mu.Lock()
 	defer dl.mu.Unlock()
 
-	if dl.multiWriter != nil {
-		return dl.multiWriter.Write(p)
+	// Check if we need to rotate (date changed)
+	today := time.Now().Format("2006-01-02")
+	if dl.currentDate != today {
+		if err := dl.rotateIfNeededLocked(); err != nil {
+			// Log rotation failed, write to stdout only
+			os.Stdout.Write(p)
+			return len(p), nil
+		}
 	}
-	return os.Stdout.Write(p)
+
+	// Write to both stdout and file
+	os.Stdout.Write(p)
+	if dl.currentFile != nil {
+		dl.currentFile.Write(p)
+	}
+	return len(p), nil
 }
 
 // Close closes the current log file

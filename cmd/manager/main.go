@@ -636,6 +636,27 @@ func (m *Manager) Monitor() error {
 	log.Printf("========================================")
 	log.Println()
 
+	// Send startup notification to Telegram
+	m.notify(fmt.Sprintf(`🚀 <b>FAILOVER MANAGER STARTED</b>
+
+🕐 %s
+
+<b>Active:</b> %s (%s)
+<b>Passive:</b> %s (%s)
+
+<b>Settings:</b>
+• Heartbeat: %v
+• Misses before failover: %d
+• Slot diff threshold: %d
+• Dry-run: %v`,
+		time.Now().Format("2006-01-02 15:04:05"),
+		m.validators[0].Name, m.validators[0].Endpoint,
+		m.validators[1].Name, m.validators[1].Endpoint,
+		interval,
+		m.config.MissesBeforeFailover,
+		m.config.SlotDiffThreshold,
+		m.config.DryRun))
+
 	// Start network slot monitoring loop
 	go m.networkSlotLoop()
 

@@ -611,8 +611,13 @@ func (va *ValidatorAgent) handleStatus(w http.ResponseWriter, r *http.Request) {
 	response.LastTowerBackup = va.lastTowerBackup.Unix()
 	va.mu.RUnlock()
 
-	log.Printf("Status request: ProcessRunning=%v, Slot=%d, Active=%v, Healthy=%v",
-		response.ProcessRunning, response.ValidatorSlot, response.IsActive, response.IsHealthy)
+	if response.Error != "" {
+		log.Printf("Status request: ProcessRunning=%v, Slot=%d, Active=%v, Healthy=%v, Error=%s",
+			response.ProcessRunning, response.ValidatorSlot, response.IsActive, response.IsHealthy, response.Error)
+	} else {
+		log.Printf("Status request: ProcessRunning=%v, Slot=%d, Active=%v, Healthy=%v",
+			response.ProcessRunning, response.ValidatorSlot, response.IsActive, response.IsHealthy)
+	}
 
 	// Send response immediately, don't block on tower backup
 	va.sendJSON(w, response)

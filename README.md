@@ -12,51 +12,16 @@ Before setting up the failover system, ensure the following requirements are met
 
 etcd must be installed and running as a service on each server for tower file synchronization.
 
-```bash
-# Install etcd
-sudo apt update
-sudo apt install etcd
-
-# Enable and start the service
-sudo systemctl enable etcd
-sudo systemctl start etcd
-
-# Verify it's running
-sudo systemctl status etcd
-etcdctl put test "hello" && etcdctl get test
-```
+https://etcd.io/docs/v2.3/clustering/
 
 ### 2. Validator Snapshots
 
-Snapshots must be enabled on your Solana validator to allow faster restarts and state recovery. Add to your validator startup command:
+Snapshots must be enabled on your Solana validator to allow faster restarts and state recovery.
 
-```bash
---snapshots /path/to/snapshots \
---snapshot-interval-slots 500
-```
 
 ### 3. Autostart Configuration
 
-All services should be configured to start automatically after a system restart:
-
-```bash
-# Enable autostart for Solana validator
-sudo systemctl enable solana
-
-# Enable autostart for failover agent
-sudo systemctl enable failover-agent
-
-# Enable autostart for etcd
-sudo systemctl enable etcd
-
-# (On manager server) Enable autostart for failover manager
-sudo systemctl enable failover-manager
-```
-
-Verify autostart is configured:
-```bash
-sudo systemctl is-enabled solana failover-agent etcd
-```
+All services (Solana validator, failover agent/manager, etcd) should be configured to start automatically after a system restart.
 
 ### 4. Sudoers Configuration
 
@@ -68,7 +33,7 @@ sudo visudo
 
 Add the following line (replace `solana` with your user):
 ```
-solana ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop failover-agent, /usr/bin/systemctl start failover-agent, /usr/bin/systemctl restart failover-agent
+solana ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop failover-agent, /usr/bin/systemctl restart solana
 ```
 
 ## Architecture
@@ -133,54 +98,78 @@ go build -o failover-agent ./cmd/validator
 
 ## Quick Start
 
-### 1. Configure Manager (on manager server)
+### 1. Starting order
 
-Create `manager-config.json`:
-```json
-{
-  "validator1": {
-    "endpoint": "http://192.168.1.10:8080",
-    "ip": "80.251.153.166"
-  },
-  "validator2": {
-    "endpoint": "http://192.168.1.11:8080",
-    "ip": "80.251.153.167"
-  },
-  "gossip_check_command": "solana -ut gossip | grep DQx6XD5fWQ2Pbkg4Fi4gVzLbGg6c4ST7ZgXTawZZAXEY",
-  "cluster_rpc": "https://api.testnet.solana.com",
-  "dry_run": false
-}
-```
-
-Run:
-```bash
-./failover-manager --config manager-config.json
-```
+First start passive validator agent,
+then active validator agent and afterward manager.
 
 ### 2. Configure Agents (on each validator server)
 
-Create `validator-config.json` on each server:
+Create `validator-config.json` on each server (replace IDENTITY, IP, PEER_IP (ip of second agent), LEDGER_PATH, SOLANA_PATH and IDENTITY_PATH):
 ```json
 {
   "listen_addr": ":8080",
   "local_rpc": "http://127.0.0.1:8899",
   "process_name": "agave-validator",
-  "peer_endpoint": "http://PEER_IP:8080",
-  "gossip_check_command": "solana -ut gossip | grep DQx6XD5fWQ2Pbkg4Fi4gVzLbGg6c4ST7ZgXTawZZAXEY",
-  "local_ip": "THIS_SERVER_PUBLIC_IP",
-  "tower_file_path": "/path/to/ledger/tower-1_9-IDENTITY.bin",
-  "tower_backup_command": "etcdctl put /solana/tower ...",
-  "tower_restore_command": "etcdctl get /solana/tower ...",
-  "identity_change_command": "agave-validator --ledger /path set-identity /path/validator-keypair.json",
-  "identity_remove_command": "agave-validator --ledger /path set-identity /path/unstaked-identity.json",
-  "dry_run": false
+  "peer_endpoint": "http://PEPEER_IP:8080",
+  "is_active_on_start": false,
+  "manager_timeout": "30s",
+  "tower_backup_command": "etcdctl put /solana/tower/active \"$(base64 -w0 LEDGER_PATH/tower-1_9-*.bin)\"",
+  "tower_restore_command": "etcdctl get /solana/tower/active --print-value-only | base64 -d > LEDGER_PATH/tower-1_9-IDENTITY.bin",
+  "identity_change_command": "SOLANA_PATH/agave-validator  -l LEDGER_PATH set-identity IDENTITY_PATH/testnet-validator-keypair.json",
+  "identity_remove_command": "SOLANA_PATH/agave-validator  -l LEDGER_PATH set-identity IDENTITY_PATH/unstaked-identity.json",
+  "dry_run": false,
+  "tower_file_path": "LEDGER_PATH/tower-1_9-{validator_identity}.bin",
+  "validator_identity": "IDENTITY",
+  "gossip_check_command": "solana -ut gossip | grep {validator_identity}",
+  "local_ip": "IP",
+  "log_file": "/home/solana/failover/agent.log",
+  "validator_restart_command": "sudo systemctl restart solana",
+  "agent_stop_command": "sudo systemctl stop failover-agent",
+  "active_identity_symlink_command": "ln -sf IDENTITY_PATH/testnet-validator-keypair.json IDENTITY_PATH/identity.json",
+  "passive_identity_symlink_command": "ln -sf IDENTITY_PATH/unstaked-identity.json IDENTITY_PATH/identity.json"
 }
 ```
+Fields "is_active_on_start" and "local_ip" are optional. If not provided, the agent will retrieve it from gossip and use the local IP address.
 
-Run:
+Run as service:
 ```bash
 ./failover-agent --config validator-config.json
 ```
+
+### 2. Configure Manager (on manager server)
+
+Create `manager-config.json`:
+```json
+{
+"validator1": {
+    "endpoint": "http://AGENT_1_IP:8080",
+    "ip": "AGENT_1_IP"
+  },
+  "validator2": {
+    "endpoint": "http://AGENT_2_IP:8080",
+    "ip": "AGENT_2_IP"
+  },
+  "gossip_check_command": "solana -ut gossip | grep IDENTITY",
+  "cluster_rpc": "https://api.testnet.solana.com",
+  "heartbeat_interval": "5s",
+  "misses_before_failover": 5,
+  "slot_diff_threshold": 100,
+  "request_timeout": "5s",
+  "dry_run": false,
+  "telegram_bot_token": "BOT_TOKEN",
+  "telegram_chat_id": "-CHAT_ID",
+  "log_file": "/home/solana/failover/manager.log"
+}
+
+```
+
+Run as service:
+```bash
+./failover-manager --config manager-config.json
+```
+
+
 
 ## Auto-Detection from Gossip
 
@@ -194,27 +183,8 @@ Both manager and agents can automatically detect which validator is currently ac
 
 Example gossip output:
 ```
-80.251.153.166  | DQx6XD5fWQ2Pbkg4Fi4gVzLbGg6c4ST7ZgXTawZZAXEY | 8001   | 8004  | 8010     | 80.251.153.166:8899
+80.251.153.166  | IDENTITY_ID | 8001   | 8004  | 8010     | 80.251.153.166:8899
 ```
-
-### Manager Configuration
-
-The manager uses `validator1`, `validator2`, and `gossip_check_command` to auto-detect:
-```json
-{
-  "validator1": {
-    "endpoint": "http://192.168.1.10:8080",
-    "ip": "80.251.153.166"
-  },
-  "validator2": {
-    "endpoint": "http://192.168.1.11:8080", 
-    "ip": "80.251.153.167"
-  },
-  "gossip_check_command": "solana -ut gossip | grep YOUR_VALIDATOR_PUBKEY"
-}
-```
-
-You can still use explicit `active_validator` and `passive_validator` if preferred.
 
 ### Agent Configuration
 
@@ -272,57 +242,6 @@ If gossip IP matches `local_ip`, the agent starts as active. Falls back to `is_a
 ./failover-agent --generate-config
 ```
 
-## Configuration Reference
-
-### Manager Config
-
-```json
-{
-  "validator1": {
-    "endpoint": "http://192.168.1.10:8080",
-    "ip": "80.251.153.166"
-  },
-  "validator2": {
-    "endpoint": "http://192.168.1.11:8080",
-    "ip": "80.251.153.167"
-  },
-  "gossip_check_command": "solana -ut gossip | grep PUBKEY",
-  "cluster_rpc": "https://api.testnet.solana.com",
-  "slot_check_interval": "30s",
-  "heartbeat_interval": "5s",
-  "misses_before_failover": 5,
-  "slot_diff_threshold": 100,
-  "request_timeout": "5s",
-  "dry_run": true,
-  "log_file": "/var/log/failover-manager.log",
-  "telegram_bot_token": "YOUR_BOT_TOKEN",
-  "telegram_chat_id": "YOUR_CHAT_ID"
-}
-```
-
-### Validator Agent Config
-
-```json
-{
-  "listen_addr": ":8080",
-  "local_rpc": "http://127.0.0.1:8899",
-  "process_name": "agave-validator",
-  "peer_endpoint": "http://PEER_IP:8080",
-  "is_active_on_start": false,
-  "manager_timeout": "30s",
-  "tower_backup_command": "etcdctl put /solana/tower/$(hostname) \"$(cat tower.bin | base64)\"",
-  "tower_restore_command": "etcdctl get /solana/tower/peer --print-value-only | base64 -d > tower.bin",
-  "identity_change_command": "agave-validator --ledger /path set-identity /path/validator-keypair.json",
-  "identity_remove_command": "agave-validator --ledger /path set-identity /path/unstaked-identity.json",
-  "tower_file_path": "/path/to/ledger/tower-1_9-IDENTITY.bin",
-  "validator_identity": "DQx6XD5fWQ2Pbkg4Fi4gVzLbGg6c4ST7ZgXTawZZAXEY",
-  "gossip_check_command": "solana -ut gossip | grep PUBKEY",
-  "local_ip": "80.251.153.166",
-  "dry_run": true,
-  "log_file": "/var/log/failover-validator.log"
-}
-```
-
 ## Failover Process
 
 ### When Active Becomes Unhealthy
@@ -355,7 +274,6 @@ If gossip IP matches `local_ip`, the agent starts as active. Falls back to `is_a
 | `/peer-status` | POST | Returns peer status (used by other validator) |
 | `/failover` | POST | Execute failover command |
 | `/shutdown` | POST | Shutdown the agent |
-| `/health` | GET | Simple health check |
 
 ## Dry-Run Mode
 
@@ -384,6 +302,7 @@ The manager can send notifications to Telegram for critical events:
 - 🔄 **Failover complete** - when failover succeeds (with reason and validator info)
 - 🔴 **Server unreachable** - when a validator becomes unreachable (sent only once)
 - 🟢 **Server back online** - when a validator becomes reachable again
+- 🟢 **Server status** - sends status each 4 hours
 
 ### Setup
 
@@ -410,32 +329,3 @@ For group chats, the chat ID is negative. For private chats, use your user ID.
 6. **Gossip-based detection**: Automatic active/passive detection
 7. **Telegram alerts**: Instant notifications for critical events
 8. **Logging**: All actions logged for audit
-
-## Example Commands
-
-### Tower Backup/Restore
-
-```bash
-# Backup to etcd (base64 encoded)
-etcdctl put /solana/tower/primary "$(cat /var/solana/ledger/tower-1_9-*.bin | base64)"
-
-# Restore from etcd
-etcdctl get /solana/tower/primary --print-value-only | base64 -d > /var/solana/ledger/tower-1_9-*.bin
-```
-
-### Identity Commands
-
-```bash
-# Change to voting identity (become active)
-agave-validator --ledger /var/solana/ledger set-identity /var/solana/validator-keypair.json
-
-# Change to unstaked identity (become passive)
-agave-validator --ledger /var/solana/ledger set-identity /var/solana/unstaked-identity.json
-```
-
-### Remote Agent Shutdown
-
-```bash
-# Shutdown all agents (validators keep running, only agents stop)
-./failover-manager --config manager-config.json --shutdown-agent
-```

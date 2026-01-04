@@ -692,12 +692,6 @@ func (va *ValidatorAgent) handleFailover(w http.ResponseWriter, r *http.Request)
 	va.sendJSON(w, response)
 }
 
-// handleHealth is a simple health check endpoint
-func (va *ValidatorAgent) handleHealth(w http.ResponseWriter, r *http.Request) {
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("OK"))
-}
-
 // handleShutdown handles the /shutdown endpoint (from manager)
 func (va *ValidatorAgent) handleShutdown(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -840,7 +834,6 @@ func (va *ValidatorAgent) Start() error {
 	http.HandleFunc("/status", va.handleStatus)
 	http.HandleFunc("/peer-status", va.handlePeerStatus)
 	http.HandleFunc("/failover", va.handleFailover)
-	http.HandleFunc("/health", va.handleHealth)
 	http.HandleFunc("/shutdown", va.handleShutdown)
 
 	// Start background loop for manager watch

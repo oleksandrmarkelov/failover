@@ -84,8 +84,9 @@ type Manager struct {
 	// Solana RPC client for cluster slot checks
 	clusterClient *rpc.Client
 
-	// HTTP client
-	httpClient *http.Client
+	// HTTP clients
+	httpClient         *http.Client // For status checks (short timeout)
+	failoverHttpClient *http.Client // For failover commands (longer timeout)
 
 	// Shutdown
 	ctx    context.Context
@@ -105,6 +106,9 @@ func NewManager(cfg *config.ManagerConfig) *Manager {
 		clusterClient: rpc.New(cfg.ClusterRPC),
 		httpClient: &http.Client{
 			Timeout: cfg.RequestTimeout.Duration(),
+		},
+		failoverHttpClient: &http.Client{
+			Timeout: 30 * time.Second, // Longer timeout for failover commands
 		},
 		ctx:    ctx,
 		cancel: cancel,
@@ -320,7 +324,7 @@ func (m *Manager) sendFailoverCommand(ctx context.Context, state *ValidatorState
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := m.httpClient.Do(req)
+	resp, err := m.failoverHttpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to send command: %w", err)
 	}

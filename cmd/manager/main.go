@@ -575,7 +575,9 @@ func (m *Manager) checkAndFailover() {
 		// Check if passive is available
 		if !passiveState.IsReachable {
 			log.Printf("CRITICAL: Passive validator is also unreachable. Cannot failover!")
-			m.notify(fmt.Sprintf("🚨 <b>FAILOVER BLOCKED</b>\n\nActive unhealthy: %s\n\nPassive validator is unreachable. Cannot failover!", failoverReason))
+			m.notify(fmt.Sprintf("🚨 <b>FAILOVER BLOCKED</b>\n\n<b>Active:</b> %s (%s)\nUnhealthy: %s\n\n<b>Passive:</b> %s (%s)\nUnreachable\n\nCannot failover!",
+				activeState.Name, activeState.Endpoint, failoverReason,
+				passiveState.Name, passiveState.Endpoint))
 			return
 		}
 
@@ -586,7 +588,9 @@ func (m *Manager) checkAndFailover() {
 				passiveReason = m.getUnhealthyReason(passiveState, passiveStatus)
 			}
 			log.Printf("CRITICAL: Passive validator is not healthy (%s). Cannot failover!", passiveReason)
-			m.notify(fmt.Sprintf("🚨 <b>FAILOVER BLOCKED</b>\n\nActive unhealthy: %s\n\nPassive not healthy: %s\n\nCannot failover!", failoverReason, passiveReason))
+			m.notify(fmt.Sprintf("🚨 <b>FAILOVER BLOCKED</b>\n\n<b>Active:</b> %s (%s)\nUnhealthy: %s\n\n<b>Passive:</b> %s (%s)\nNot healthy: %s\n\nCannot failover!",
+				activeState.Name, activeState.Endpoint, failoverReason,
+				passiveState.Name, passiveState.Endpoint, passiveReason))
 			return
 		}
 

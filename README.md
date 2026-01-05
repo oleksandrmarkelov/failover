@@ -10,7 +10,7 @@ Before setting up the failover system, ensure the following requirements are met
 
 ### 1. etcd Installation
 
-etcd must be installed and running as a service on each server for tower file synchronization.
+etcd must be installed and running as a service on at least 3 servers for tower file synchronization (manager and both validators).
 
 https://etcd.io/docs/v2.3/clustering/
 

@@ -66,6 +66,11 @@ type ValidatorState struct {
 	ConsecutiveFails    int
 	IsReachable         bool
 	UnreachableNotified bool // true if we already sent unreachable notification
+
+	// LastReceivedTimestamp is the timestamp from the last response we successfully
+	// received from this validator. We echo this back in the next request so the
+	// agent can detect asymmetric network failures (can receive but can't send).
+	LastReceivedTimestamp int64
 }
 
 // Manager manages failover between validators
@@ -271,6 +276,10 @@ func (m *Manager) networkSlotLoop() {
 func (m *Manager) checkValidator(ctx context.Context, state *ValidatorState) (*api.ValidatorStatusResponse, error) {
 	reqBody := api.ValidatorStatusRequest{
 		Timestamp: time.Now().Unix(),
+		// Echo back the timestamp from the last response we received.
+		// This allows the agent to detect asymmetric network failures where
+		// it can receive our pings but its responses are not reaching us.
+		LastReceivedTimestamp: state.LastReceivedTimestamp,
 	}
 
 	jsonBody, err := json.Marshal(reqBody)
@@ -300,6 +309,9 @@ func (m *Manager) checkValidator(ctx context.Context, state *ValidatorState) (*a
 	if err := json.NewDecoder(resp.Body).Decode(&statusResp); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
+
+	// Save the timestamp from this response so we can echo it back in the next request
+	state.LastReceivedTimestamp = statusResp.Timestamp
 
 	return &statusResp, nil
 }

@@ -6,6 +6,13 @@ import "time"
 type ValidatorStatusRequest struct {
 	// Timestamp when request was sent
 	Timestamp int64 `json:"timestamp"`
+
+	// LastReceivedTimestamp is the timestamp from the last response the manager
+	// successfully received from this validator. This allows the agent to detect
+	// asymmetric network failures where it can receive pings but its responses
+	// are not reaching the manager.
+	// If 0, the manager has not yet received any response from this validator.
+	LastReceivedTimestamp int64 `json:"last_received_timestamp,omitempty"`
 }
 
 // ValidatorStatusResponse is returned by validator to manager

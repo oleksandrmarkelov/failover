@@ -52,6 +52,11 @@ type ValidatorAgent struct {
 	startTime       time.Time // When agent started
 	hasSeenManager  bool      // Whether we've received at least one manager ping
 
+	// Outbound connectivity tracking (Echo/Ack mechanism)
+	// Used to detect asymmetric network failures where we receive pings but can't respond
+	lastSentTimestamp  int64 // Timestamp we included in our last response
+	lastAckedTimestamp int64 // Last timestamp the manager confirmed receiving
+
 	// HTTP client for peer communication
 	httpClient *http.Client
 
@@ -565,11 +570,26 @@ func (va *ValidatorAgent) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update last manager ping time
+	// Parse the request to get LastReceivedTimestamp (Echo/Ack mechanism)
+	var req api.ValidatorStatusRequest
+	if r.Method == http.MethodPost {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			// If we can't decode, continue with empty request (backwards compatibility)
+			log.Printf("Warning: Failed to decode status request: %v", err)
+		}
+	}
+
+	// Update last manager ping time and process Echo/Ack
 	va.mu.Lock()
 	va.lastManagerPing = time.Now()
 	va.hasSeenManager = true // Mark that we've seen manager at least once
 	va.missedPings = 0
+
+	// Update lastAckedTimestamp based on what manager echoed back
+	// This is used by managerWatchLoop to detect outbound connectivity failures
+	if req.LastReceivedTimestamp > 0 {
+		va.lastAckedTimestamp = req.LastReceivedTimestamp
+	}
 	va.mu.Unlock()
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -618,6 +638,11 @@ func (va *ValidatorAgent) handleStatus(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Status request: ProcessRunning=%v, Slot=%d, Active=%v, Healthy=%v",
 			response.ProcessRunning, response.ValidatorSlot, response.IsActive, response.IsHealthy)
 	}
+
+	// Track the timestamp we're sending (for Echo/Ack mechanism)
+	va.mu.Lock()
+	va.lastSentTimestamp = response.Timestamp
+	va.mu.Unlock()
 
 	// Send response immediately, don't block on tower backup
 	va.sendJSON(w, response)
@@ -772,6 +797,8 @@ func (va *ValidatorAgent) managerWatchLoop() {
 			lastPing := va.lastManagerPing
 			hasSeenManager := va.hasSeenManager
 			startTime := va.startTime
+			lastSentTimestamp := va.lastSentTimestamp
+			lastAckedTimestamp := va.lastAckedTimestamp
 			va.mu.RUnlock()
 
 			// Only active validator needs to worry about manager timeout
@@ -793,11 +820,40 @@ func (va *ValidatorAgent) managerWatchLoop() {
 				continue
 			}
 
-			// We've seen manager at least once, now monitor for timeout
-			// Check if manager has been silent too long
-			if time.Since(lastPing) > managerTimeout {
+			// Check for two types of manager communication failure:
+			// 1. No pings received (manager down or inbound blocked)
+			// 2. Pings received but Echo/Ack failing (outbound blocked - asymmetric failure)
+			//
+			// For case 2: if we've sent responses but manager keeps echoing an old timestamp,
+			// it means our responses aren't reaching the manager. This is treated the same
+			// as manager being unavailable, and we check peer status to decide what to do.
+
+			noPingsReceived := time.Since(lastPing) > managerTimeout
+
+			// Echo/Ack failure: we've sent at least one response, manager has acked at least once,
+			// but the acked timestamp is older than what we sent (by more than managerTimeout)
+			// This means manager has been receiving our pings but not getting responses for a while
+			echoAckFailing := false
+			if lastSentTimestamp > 0 && lastAckedTimestamp > 0 && lastSentTimestamp > lastAckedTimestamp {
+				// Manager is echoing an old timestamp. Check if this has persisted for too long.
+				// lastAckedTimestamp is a unix timestamp, so (lastSentTimestamp - lastAckedTimestamp)
+				// gives us roughly how many seconds of responses haven't been acknowledged.
+				ackLag := lastSentTimestamp - lastAckedTimestamp
+				if ackLag > int64(managerTimeout.Seconds()) {
+					echoAckFailing = true
+				}
+			}
+
+			if noPingsReceived {
 				log.Printf("WARNING: No manager heartbeat for %v (timeout: %v)",
 					time.Since(lastPing), managerTimeout)
+			} else if echoAckFailing {
+				log.Printf("WARNING: Manager pings received but Echo/Ack failing (sent=%d, acked=%d, lag=%ds)",
+					lastSentTimestamp, lastAckedTimestamp, lastSentTimestamp-lastAckedTimestamp)
+				log.Printf("This indicates outbound connectivity failure - manager not receiving our responses")
+			}
+
+			if noPingsReceived || echoAckFailing {
 
 				// Before doing anything, check if peer is alive
 				ctx, cancel := context.WithTimeout(va.ctx, 5*time.Second)

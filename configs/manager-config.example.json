@@ -1,11 +1,13 @@
 {
   "validator1": {
     "endpoint": "http://192.168.1.10:8080",
-    "ip": "80.251.153.166"
+    "ip": "80.251.153.166",
+    "ledger_path": "/home/solana/ledger"
   },
   "validator2": {
     "endpoint": "http://192.168.1.11:8080",
-    "ip": "80.251.153.167"
+    "ip": "80.251.153.167",
+    "ledger_path": "/home/solana/ledger"
   },
   "gossip_check_command": "solana -ut gossip | grep YOUR_VALIDATOR_IDENTITY_PUBKEY",
   "cluster_rpc": "https://api.testnet.solana.com",
@@ -17,5 +19,11 @@
   "dry_run": true,
   "log_file": "/var/log/failover-manager.log",
   "telegram_bot_token": "YOUR_BOT_TOKEN_FROM_BOTFATHER",
-  "telegram_chat_id": "YOUR_CHAT_ID"
+  "telegram_chat_id": "YOUR_CHAT_ID",
+
+  "_comment_secure_mode": "Secure Identity Mode: manager holds identity keypair and sends via SSH",
+  "secure_identity_mode": false,
+  "identity_keypair_path": "/home/solana/identity.json",
+  "ssh_user": "solana",
+  "ssh_key_path": "~/.ssh/failover_key"
 }

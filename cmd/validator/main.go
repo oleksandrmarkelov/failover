@@ -369,7 +369,8 @@ func (va *ValidatorAgent) restoreTower() error {
 }
 
 // becomeActive switches this validator to active mode
-func (va *ValidatorAgent) becomeActive(reason string) error {
+// If skipIdentity is true, only tower restore is performed (secure identity mode)
+func (va *ValidatorAgent) becomeActive(reason string, skipIdentity bool) error {
 	va.mu.Lock()
 	if va.isActive {
 		va.mu.Unlock()
@@ -378,12 +379,27 @@ func (va *ValidatorAgent) becomeActive(reason string) error {
 	}
 	va.mu.Unlock()
 
-	log.Printf("=== BECOMING ACTIVE === Reason: %s", reason)
+	if skipIdentity {
+		log.Printf("=== BECOMING ACTIVE (tower only, secure mode) === Reason: %s", reason)
+	} else {
+		log.Printf("=== BECOMING ACTIVE === Reason: %s", reason)
+	}
 
 	// Step 1: Restore tower file from etcd
 	log.Printf("Step 1: Restoring tower file from etcd...")
 	if err := va.restoreTower(); err != nil {
 		return fmt.Errorf("failed to restore tower: %w", err)
+	}
+
+	// In secure identity mode, skip identity symlink and identity change
+	// Manager will set identity via SSH
+	if skipIdentity {
+		va.mu.Lock()
+		va.isActive = true
+		va.mu.Unlock()
+
+		log.Printf("=== TOWER RESTORED (identity will be set by manager via SSH) ===")
+		return nil
 	}
 
 	// Step 2: Update identity symlink to point to active identity
@@ -692,7 +708,7 @@ func (va *ValidatorAgent) handleFailover(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	log.Printf("Failover command received: Action=%s, Reason=%s", cmd.Action, cmd.Reason)
+	log.Printf("Failover command received: Action=%s, Reason=%s, SkipIdentity=%v", cmd.Action, cmd.Reason, cmd.SkipIdentity)
 
 	response := api.FailoverResponse{
 		DryRun:    va.config.DryRun,
@@ -702,7 +718,7 @@ func (va *ValidatorAgent) handleFailover(w http.ResponseWriter, r *http.Request)
 	var err error
 	switch cmd.Action {
 	case "become_active":
-		err = va.becomeActive(cmd.Reason)
+		err = va.becomeActive(cmd.Reason, cmd.SkipIdentity)
 	case "become_passive":
 		err = va.becomePassive(cmd.Reason)
 	default:

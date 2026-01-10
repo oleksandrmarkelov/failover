@@ -61,6 +61,11 @@ type FailoverCommand struct {
 	// Reason for the failover
 	Reason string `json:"reason"`
 
+	// SkipIdentity if true, agent should skip identity symlink and identity change commands
+	// Used in secure identity mode where manager sets identity via SSH
+	// Only applies to "become_active" action
+	SkipIdentity bool `json:"skip_identity,omitempty"`
+
 	// Timestamp when command was sent
 	Timestamp int64 `json:"timestamp"`
 }

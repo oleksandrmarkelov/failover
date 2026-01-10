@@ -317,11 +317,12 @@ func (m *Manager) checkValidator(ctx context.Context, state *ValidatorState) (*a
 }
 
 // sendFailoverCommand sends a failover command to a validator
-func (m *Manager) sendFailoverCommand(ctx context.Context, state *ValidatorState, action, reason string) (*api.FailoverResponse, error) {
+func (m *Manager) sendFailoverCommand(ctx context.Context, state *ValidatorState, action, reason string, skipIdentity bool) (*api.FailoverResponse, error) {
 	cmd := api.FailoverCommand{
-		Action:    action,
-		Reason:    reason,
-		Timestamp: time.Now().Unix(),
+		Action:       action,
+		Reason:       reason,
+		SkipIdentity: skipIdentity,
+		Timestamp:    time.Now().Unix(),
 	}
 
 	jsonBody, err := json.Marshal(cmd)
@@ -430,6 +431,86 @@ func (m *Manager) getUnhealthyReason(state *ValidatorState, status *api.Validato
 	return strings.Join(reasons, ", ")
 }
 
+// getValidatorEndpointConfig returns the ValidatorEndpoint config for a validator by its endpoint
+func (m *Manager) getValidatorEndpointConfig(endpoint string) *config.ValidatorEndpoint {
+	if m.config.Validator1.Endpoint == endpoint {
+		return &m.config.Validator1
+	}
+	if m.config.Validator2.Endpoint == endpoint {
+		return &m.config.Validator2
+	}
+	return nil
+}
+
+// expandSSHKeyPath expands ~ to home directory in SSH key path
+func expandSSHKeyPath(path string) string {
+	if strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			return strings.Replace(path, "~", home, 1)
+		}
+	}
+	return path
+}
+
+// sshSetIdentity sends the identity keypair via SSH to set the validator identity
+// Executes: ssh user@host "agave-validator --ledger $LEDGER set-identity /dev/stdin" < identity.json
+func (m *Manager) sshSetIdentity(host, ledgerPath string) error {
+	keypairData, err := os.ReadFile(m.config.IdentityKeypairPath)
+	if err != nil {
+		return fmt.Errorf("failed to read identity keypair: %w", err)
+	}
+
+	sshKeyPath := expandSSHKeyPath(m.config.SSHKeyPath)
+	remoteCmd := fmt.Sprintf("agave-validator --ledger %s set-identity /dev/stdin", ledgerPath)
+
+	cmd := exec.Command("ssh",
+		"-i", sshKeyPath,
+		"-o", "ConnectTimeout=10",
+		"-o", "StrictHostKeyChecking=accept-new",
+		fmt.Sprintf("%s@%s", m.config.SSHUser, host),
+		remoteCmd,
+	)
+	cmd.Stdin = bytes.NewReader(keypairData)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("ssh set-identity failed: %w, output: %s", err, string(output))
+	}
+
+	log.Printf("SSH set-identity output: %s", strings.TrimSpace(string(output)))
+	return nil
+}
+
+// sshAddAuthorizedVoter sends the identity keypair via SSH to add authorized voter
+// Executes: ssh user@host "agave-validator --ledger $LEDGER authorized-voter add /dev/stdin" < identity.json
+func (m *Manager) sshAddAuthorizedVoter(host, ledgerPath string) error {
+	keypairData, err := os.ReadFile(m.config.IdentityKeypairPath)
+	if err != nil {
+		return fmt.Errorf("failed to read identity keypair: %w", err)
+	}
+
+	sshKeyPath := expandSSHKeyPath(m.config.SSHKeyPath)
+	remoteCmd := fmt.Sprintf("agave-validator --ledger %s authorized-voter add /dev/stdin", ledgerPath)
+
+	cmd := exec.Command("ssh",
+		"-i", sshKeyPath,
+		"-o", "ConnectTimeout=10",
+		"-o", "StrictHostKeyChecking=accept-new",
+		fmt.Sprintf("%s@%s", m.config.SSHUser, host),
+		remoteCmd,
+	)
+	cmd.Stdin = bytes.NewReader(keypairData)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("ssh authorized-voter add failed: %w, output: %s", err, string(output))
+	}
+
+	log.Printf("SSH authorized-voter add output: %s", strings.TrimSpace(string(output)))
+	return nil
+}
+
 // performFailover switches from active to passive
 func (m *Manager) performFailover(reason string) error {
 	m.mu.Lock()
@@ -458,7 +539,7 @@ func (m *Manager) performFailover(reason string) error {
 	// Step 1: Tell old active to become passive (if reachable)
 	if oldActive.IsReachable {
 		log.Printf("Step 1: Sending become_passive to [%s]...", oldActive.Name)
-		resp, err := m.sendFailoverCommand(ctx, oldActive, "become_passive", reason)
+		resp, err := m.sendFailoverCommand(ctx, oldActive, "become_passive", reason, false)
 		if err != nil {
 			log.Printf("Warning: Failed to send become_passive to [%s]: %v", oldActive.Name, err)
 		} else if !resp.Success {
@@ -471,16 +552,54 @@ func (m *Manager) performFailover(reason string) error {
 	}
 
 	// Step 2: Tell new active to become active
-	log.Printf("Step 2: Sending become_active to [%s]...", newActive.Name)
-	resp, err := m.sendFailoverCommand(ctx, newActive, "become_active", reason)
-	if err != nil {
-		return fmt.Errorf("failed to send become_active to [%s]: %w", newActive.Name, err)
-	}
-	if !resp.Success {
-		return fmt.Errorf("[%s] failed to become active: %s", newActive.Name, resp.Message)
-	}
+	if m.config.SecureIdentityMode {
+		// Secure mode: manager sends identity via SSH
+		log.Printf("Step 2: Setting identity via SSH (secure mode) on [%s]...", newActive.Name)
 
-	log.Printf("[%s] is now active", newActive.Name)
+		validatorCfg := m.getValidatorEndpointConfig(newActive.Endpoint)
+		if validatorCfg == nil {
+			return fmt.Errorf("validator config not found for endpoint %s", newActive.Endpoint)
+		}
+		if validatorCfg.LedgerPath == "" {
+			return fmt.Errorf("ledger_path not configured for validator %s", newActive.Endpoint)
+		}
+
+		// First, tell agent to restore tower and prepare for activation (skip identity change)
+		log.Printf("Step 2a: Sending become_active to agent (tower restore only)...")
+		resp, err := m.sendFailoverCommand(ctx, newActive, "become_active", reason, true)
+		if err != nil {
+			log.Printf("Warning: Failed to send become_active to [%s]: %v", newActive.Name, err)
+			// Continue anyway - we'll set identity via SSH
+		} else if !resp.Success {
+			log.Printf("Warning: [%s] become_active returned: %s", newActive.Name, resp.Message)
+		}
+
+		// Set identity via SSH
+		log.Printf("Step 2b: SSH set-identity on %s...", validatorCfg.IP)
+		if err := m.sshSetIdentity(validatorCfg.IP, validatorCfg.LedgerPath); err != nil {
+			return fmt.Errorf("failed to set identity via SSH: %w", err)
+		}
+
+		// Add authorized voter via SSH
+		log.Printf("Step 2c: SSH authorized-voter add on %s...", validatorCfg.IP)
+		if err := m.sshAddAuthorizedVoter(validatorCfg.IP, validatorCfg.LedgerPath); err != nil {
+			return fmt.Errorf("failed to add authorized voter via SSH: %w", err)
+		}
+
+		log.Printf("[%s] identity set via SSH", newActive.Name)
+	} else {
+		// Local mode: agent has identity keypair locally
+		log.Printf("Step 2: Sending become_active to [%s]...", newActive.Name)
+		resp, err := m.sendFailoverCommand(ctx, newActive, "become_active", reason, false)
+		if err != nil {
+			return fmt.Errorf("failed to send become_active to [%s]: %w", newActive.Name, err)
+		}
+		if !resp.Success {
+			return fmt.Errorf("[%s] failed to become active: %s", newActive.Name, resp.Message)
+		}
+
+		log.Printf("[%s] is now active", newActive.Name)
+	}
 
 	// Update state
 	m.mu.Lock()

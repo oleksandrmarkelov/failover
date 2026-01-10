@@ -14,6 +14,10 @@ type ValidatorEndpoint struct {
 
 	// IP is the public IP of this validator for gossip matching (e.g., "80.251.153.166")
 	IP string `json:"ip"`
+
+	// LedgerPath is the path to the validator's ledger directory (required for secure identity mode)
+	// Example: "/home/solana/ledger"
+	LedgerPath string `json:"ledger_path"`
 }
 
 // ManagerConfig is the configuration for the manager program
@@ -69,6 +73,26 @@ type ManagerConfig struct {
 	// TelegramChatID is the chat ID to send notifications to
 	// Can be a user ID, group ID, or channel ID (e.g., "-1001234567890")
 	TelegramChatID string `json:"telegram_chat_id"`
+
+	// SecureIdentityMode if true, manager holds the identity keypair and sends it via SSH
+	// when activating a validator. The keypair never resides on the validator server.
+	// When enabled, agent's identity_change_command and active_identity_symlink_command are ignored.
+	SecureIdentityMode bool `json:"secure_identity_mode"`
+
+	// IdentityKeypairPath path to the staked identity keypair JSON file on the manager machine
+	// Required when SecureIdentityMode is true
+	// Example: "/home/solana/identity.json"
+	IdentityKeypairPath string `json:"identity_keypair_path"`
+
+	// SSHUser username for SSH connections to validator servers
+	// Required when SecureIdentityMode is true
+	// Example: "solana"
+	SSHUser string `json:"ssh_user"`
+
+	// SSHKeyPath path to the SSH private key for passwordless authentication
+	// Required when SecureIdentityMode is true
+	// Example: "~/.ssh/failover_key"
+	SSHKeyPath string `json:"ssh_key_path"`
 }
 
 // ValidatorConfig is the configuration for the validator program

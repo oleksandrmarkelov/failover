@@ -93,6 +93,18 @@ type ManagerConfig struct {
 	// Required when SecureIdentityMode is true
 	// Example: "~/.ssh/failover_key"
 	SSHKeyPath string `json:"ssh_key_path"`
+
+	// SSHSetIdentityCommand command template to set validator identity via SSH
+	// Use {ledger} as placeholder for ledger path
+	// The identity keypair will be piped to stdin
+	// Example: "agave-validator --ledger {ledger} set-identity /dev/stdin"
+	SSHSetIdentityCommand string `json:"ssh_set_identity_command"`
+
+	// SSHAuthorizedVoterCommand command template to add authorized voter via SSH
+	// Use {ledger} as placeholder for ledger path
+	// The identity keypair will be piped to stdin
+	// Example: "agave-validator --ledger {ledger} authorized-voter add /dev/stdin"
+	SSHAuthorizedVoterCommand string `json:"ssh_authorized_voter_command"`
 }
 
 // ValidatorConfig is the configuration for the validator program

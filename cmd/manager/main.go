@@ -453,16 +453,14 @@ func expandSSHKeyPath(path string) string {
 	return path
 }
 
-// sshSetIdentity sends the identity keypair via SSH to set the validator identity
-// Executes: ssh user@host "agave-validator --ledger $LEDGER set-identity /dev/stdin" < identity.json
-func (m *Manager) sshSetIdentity(host, ledgerPath string) error {
+// sshExecuteWithIdentity executes a command via SSH with identity keypair piped to stdin
+func (m *Manager) sshExecuteWithIdentity(host, remoteCmd string) error {
 	keypairData, err := os.ReadFile(m.config.IdentityKeypairPath)
 	if err != nil {
 		return fmt.Errorf("failed to read identity keypair: %w", err)
 	}
 
 	sshKeyPath := expandSSHKeyPath(m.config.SSHKeyPath)
-	remoteCmd := fmt.Sprintf("agave-validator --ledger %s set-identity /dev/stdin", ledgerPath)
 
 	cmd := exec.Command("ssh",
 		"-i", sshKeyPath,
@@ -475,40 +473,31 @@ func (m *Manager) sshSetIdentity(host, ledgerPath string) error {
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("ssh set-identity failed: %w, output: %s", err, string(output))
+		return fmt.Errorf("ssh command failed: %w, output: %s", err, string(output))
 	}
 
-	log.Printf("SSH set-identity output: %s", strings.TrimSpace(string(output)))
+	log.Printf("SSH output: %s", strings.TrimSpace(string(output)))
 	return nil
 }
 
+// sshSetIdentity sends the identity keypair via SSH to set the validator identity
+func (m *Manager) sshSetIdentity(host, ledgerPath string) error {
+	cmdTemplate := m.config.SSHSetIdentityCommand
+	if cmdTemplate == "" {
+		cmdTemplate = "agave-validator --ledger {ledger} set-identity /dev/stdin"
+	}
+	remoteCmd := strings.ReplaceAll(cmdTemplate, "{ledger}", ledgerPath)
+	return m.sshExecuteWithIdentity(host, remoteCmd)
+}
+
 // sshAddAuthorizedVoter sends the identity keypair via SSH to add authorized voter
-// Executes: ssh user@host "agave-validator --ledger $LEDGER authorized-voter add /dev/stdin" < identity.json
 func (m *Manager) sshAddAuthorizedVoter(host, ledgerPath string) error {
-	keypairData, err := os.ReadFile(m.config.IdentityKeypairPath)
-	if err != nil {
-		return fmt.Errorf("failed to read identity keypair: %w", err)
+	cmdTemplate := m.config.SSHAuthorizedVoterCommand
+	if cmdTemplate == "" {
+		cmdTemplate = "agave-validator --ledger {ledger} authorized-voter add /dev/stdin"
 	}
-
-	sshKeyPath := expandSSHKeyPath(m.config.SSHKeyPath)
-	remoteCmd := fmt.Sprintf("agave-validator --ledger %s authorized-voter add /dev/stdin", ledgerPath)
-
-	cmd := exec.Command("ssh",
-		"-i", sshKeyPath,
-		"-o", "ConnectTimeout=10",
-		"-o", "StrictHostKeyChecking=accept-new",
-		fmt.Sprintf("%s@%s", m.config.SSHUser, host),
-		remoteCmd,
-	)
-	cmd.Stdin = bytes.NewReader(keypairData)
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("ssh authorized-voter add failed: %w, output: %s", err, string(output))
-	}
-
-	log.Printf("SSH authorized-voter add output: %s", strings.TrimSpace(string(output)))
-	return nil
+	remoteCmd := strings.ReplaceAll(cmdTemplate, "{ledger}", ledgerPath)
+	return m.sshExecuteWithIdentity(host, remoteCmd)
 }
 
 // performFailover switches from active to passive

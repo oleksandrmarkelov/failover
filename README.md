@@ -142,13 +142,15 @@ Run as service:
 Create `manager-config.json`:
 ```json
 {
-"validator1": {
+  "validator1": {
     "endpoint": "http://AGENT_1_IP:8080",
-    "ip": "AGENT_1_IP"
+    "ip": "AGENT_1_IP",
+    "ledger_path": "/home/solana/ledger"
   },
   "validator2": {
     "endpoint": "http://AGENT_2_IP:8080",
-    "ip": "AGENT_2_IP"
+    "ip": "AGENT_2_IP",
+    "ledger_path": "/home/solana/ledger"
   },
   "gossip_check_command": "solana -ut gossip | grep IDENTITY",
   "cluster_rpc": "https://api.testnet.solana.com",
@@ -161,13 +163,61 @@ Create `manager-config.json`:
   "telegram_chat_id": "-CHAT_ID",
   "log_file": "/home/solana/failover/manager.log"
 }
-
 ```
 
 Run as service:
 ```bash
 ./failover-manager --config manager-config.json
 ```
+
+## Secure Identity Mode
+
+In secure identity mode, the staked identity keypair is stored only on the manager server and never on the validator servers. When failover occurs, the manager sends the identity via SSH.
+
+### Configuration
+
+Add these fields to manager config:
+```json
+{
+  "secure_identity_mode": true,
+  "identity_keypair_path": "/home/solana/identity.json",
+  "ssh_user": "solana",
+  "ssh_key_path": "~/.ssh/failover_key",
+  "ssh_set_identity_command": "agave-validator --ledger {ledger} set-identity /dev/stdin",
+  "ssh_authorized_voter_command": "agave-validator --ledger {ledger} authorized-voter add /dev/stdin"
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `secure_identity_mode` | Enable secure mode (default: false) |
+| `identity_keypair_path` | Path to staked identity keypair on manager machine |
+| `ssh_user` | SSH username for validator servers |
+| `ssh_key_path` | Path to SSH private key (supports `~`) |
+| `ssh_set_identity_command` | Command template for set-identity. Use `{ledger}` placeholder |
+| `ssh_authorized_voter_command` | Command template for authorized-voter. Use `{ledger}` placeholder |
+| `ledger_path` | Ledger path on each validator (in validator1/validator2 config) |
+
+### SSH Setup
+
+```bash
+# Generate SSH key on manager
+ssh-keygen -t ed25519 -f ~/.ssh/failover_key -N ""
+
+# Copy to validator servers
+ssh-copy-id -i ~/.ssh/failover_key.pub solana@VALIDATOR1_IP
+ssh-copy-id -i ~/.ssh/failover_key.pub solana@VALIDATOR2_IP
+```
+
+### How It Works
+
+1. Manager sends `become_active` to agent with `skip_identity=true`
+2. Agent only restores tower file (skips identity commands)
+3. Manager SSHs to validator and pipes identity keypair to stdin:
+   - `ssh user@host "agave-validator --ledger /path set-identity /dev/stdin" < identity.json`
+   - `ssh user@host "agave-validator --ledger /path authorized-voter add /dev/stdin" < identity.json`
+
+In this mode, the agent's `identity_change_command` and `active_identity_symlink_command` are ignored.
 
 
 

@@ -472,14 +472,32 @@ func (m *Manager) sshExecuteWithIdentity(host, remoteCmd string) error {
 		fmt.Sprintf("%s@%s", m.config.SSHUser, host),
 		remoteCmd,
 	)
-	cmd.Stdin = bytes.NewReader(keypairData)
 
-	output, err := cmd.CombinedOutput()
+	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return fmt.Errorf("ssh command failed: %w, output: %s", err, string(output))
+		return fmt.Errorf("failed to create stdin pipe: %w", err)
 	}
 
-	log.Printf("SSH output: %s", strings.TrimSpace(string(output)))
+	var outputBuf bytes.Buffer
+	cmd.Stdout = &outputBuf
+	cmd.Stderr = &outputBuf
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start ssh command: %w", err)
+	}
+
+	_, err = stdin.Write(keypairData)
+	if err != nil {
+		return fmt.Errorf("failed to write keypair to stdin: %w", err)
+	}
+	stdin.Close()
+
+	err = cmd.Wait()
+	if err != nil {
+		return fmt.Errorf("ssh command failed: %w, output: %s", err, outputBuf.String())
+	}
+
+	log.Printf("SSH output: %s", strings.TrimSpace(outputBuf.String()))
 	return nil
 }
 
@@ -487,7 +505,7 @@ func (m *Manager) sshExecuteWithIdentity(host, remoteCmd string) error {
 func (m *Manager) sshSetIdentity(host, ledgerPath string) error {
 	cmdTemplate := m.config.SSHSetIdentityCommand
 	if cmdTemplate == "" {
-		cmdTemplate = "agave-validator --ledger {ledger} set-identity stdin"
+		cmdTemplate = "agave-validator --ledger {ledger} set-identity /dev/stdin"
 	}
 	remoteCmd := strings.ReplaceAll(cmdTemplate, "{ledger}", ledgerPath)
 	return m.sshExecuteWithIdentity(host, remoteCmd)
@@ -497,7 +515,7 @@ func (m *Manager) sshSetIdentity(host, ledgerPath string) error {
 func (m *Manager) sshAddAuthorizedVoter(host, ledgerPath string) error {
 	cmdTemplate := m.config.SSHAuthorizedVoterCommand
 	if cmdTemplate == "" {
-		cmdTemplate = "agave-validator --ledger {ledger} authorized-voter add stdin"
+		cmdTemplate = "agave-validator --ledger {ledger} authorized-voter add /dev/stdin"
 	}
 	remoteCmd := strings.ReplaceAll(cmdTemplate, "{ledger}", ledgerPath)
 	return m.sshExecuteWithIdentity(host, remoteCmd)

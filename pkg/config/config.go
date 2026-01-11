@@ -63,6 +63,11 @@ type ManagerConfig struct {
 	// DryRun if true, don't actually trigger failover
 	DryRun bool `json:"dry_run"`
 
+	// StartupGracePeriod is the duration after manager startup during which no failover
+	// will be triggered. This allows time to verify configuration is correct.
+	// Default: 2 minutes
+	StartupGracePeriod Duration `json:"startup_grace_period"`
+
 	// LogFile path to log file (empty for stdout)
 	LogFile string `json:"log_file"`
 
@@ -251,6 +256,9 @@ func LoadManagerConfig(path string) (*ManagerConfig, error) {
 	}
 	if config.RequestTimeout == 0 {
 		config.RequestTimeout = Duration(5 * time.Second)
+	}
+	if config.StartupGracePeriod == 0 {
+		config.StartupGracePeriod = Duration(2 * time.Minute)
 	}
 
 	return &config, nil

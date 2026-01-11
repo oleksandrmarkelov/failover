@@ -81,6 +81,7 @@ type Manager struct {
 	mu         sync.RWMutex
 	activeIdx  int // 0 = first validator (active), 1 = second validator (passive)
 	validators [2]*ValidatorState
+	startTime  time.Time // When manager started (for grace period)
 
 	// Network slot tracking (fetched from cluster RPC)
 	networkSlot     uint64
@@ -108,6 +109,7 @@ func NewManager(cfg *config.ManagerConfig) *Manager {
 			{Name: "secondary", Endpoint: cfg.PassiveValidator, IsReachable: true},
 		},
 		activeIdx:     0,
+		startTime:     time.Now(),
 		clusterClient: rpc.New(cfg.ClusterRPC),
 		httpClient: &http.Client{
 			Timeout: cfg.RequestTimeout.Duration(),
@@ -616,6 +618,16 @@ func (m *Manager) checkAndFailover() {
 	activeState := m.validators[activeIdx]
 	passiveState := m.validators[1-activeIdx]
 
+	// Check if we're still in startup grace period
+	gracePeriod := m.config.StartupGracePeriod.Duration()
+	timeSinceStart := time.Since(m.startTime)
+	inGracePeriod := timeSinceStart < gracePeriod
+
+	if inGracePeriod {
+		log.Printf("Startup grace period: %v remaining (no failover will be triggered)",
+			(gracePeriod - timeSinceStart).Round(time.Second))
+	}
+
 	// Check active validator (with its own timeout)
 	log.Printf("Checking [%s] (%s)...", activeState.Name, activeState.Endpoint)
 	activeCtx, activeCancel := context.WithTimeout(m.ctx, m.config.RequestTimeout.Duration())
@@ -691,6 +703,14 @@ func (m *Manager) checkAndFailover() {
 
 	if needsFailover {
 		log.Printf("Failover needed: %s", failoverReason)
+
+		// Skip failover during startup grace period
+		if inGracePeriod {
+			log.Printf("SKIPPING FAILOVER: Still in startup grace period (%v remaining)",
+				(gracePeriod - timeSinceStart).Round(time.Second))
+			log.Printf("This allows time to verify configuration is correct.")
+			return
+		}
 
 		// Check if passive is available
 		if !passiveState.IsReachable {

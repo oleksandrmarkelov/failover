@@ -279,6 +279,12 @@ If gossip IP matches `local_ip`, the agent starts as active. Falls back to `is_a
 | `--shutdown-agent` | false | Send shutdown to agents and exit |
 | `--log-file` | | Log to file |
 
+### Manager Config Options
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `startup_grace_period` | 2m | Duration after startup during which no failover is triggered. Allows time to verify configuration. |
+
 ## Agent Commands
 
 ```bash

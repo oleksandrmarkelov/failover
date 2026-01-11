@@ -466,6 +466,7 @@ func (m *Manager) sshExecuteWithIdentity(host, remoteCmd string) error {
 
 	cmd := exec.Command("ssh",
 		"-i", sshKeyPath,
+		"-T",
 		"-o", "ConnectTimeout=10",
 		"-o", "StrictHostKeyChecking=accept-new",
 		fmt.Sprintf("%s@%s", m.config.SSHUser, host),
@@ -486,7 +487,7 @@ func (m *Manager) sshExecuteWithIdentity(host, remoteCmd string) error {
 func (m *Manager) sshSetIdentity(host, ledgerPath string) error {
 	cmdTemplate := m.config.SSHSetIdentityCommand
 	if cmdTemplate == "" {
-		cmdTemplate = "agave-validator --ledger {ledger} set-identity /dev/stdin"
+		cmdTemplate = "agave-validator --ledger {ledger} set-identity stdin"
 	}
 	remoteCmd := strings.ReplaceAll(cmdTemplate, "{ledger}", ledgerPath)
 	return m.sshExecuteWithIdentity(host, remoteCmd)
@@ -496,7 +497,7 @@ func (m *Manager) sshSetIdentity(host, ledgerPath string) error {
 func (m *Manager) sshAddAuthorizedVoter(host, ledgerPath string) error {
 	cmdTemplate := m.config.SSHAuthorizedVoterCommand
 	if cmdTemplate == "" {
-		cmdTemplate = "agave-validator --ledger {ledger} authorized-voter add /dev/stdin"
+		cmdTemplate = "agave-validator --ledger {ledger} authorized-voter add stdin"
 	}
 	remoteCmd := strings.ReplaceAll(cmdTemplate, "{ledger}", ledgerPath)
 	return m.sshExecuteWithIdentity(host, remoteCmd)

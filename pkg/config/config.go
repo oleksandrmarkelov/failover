@@ -102,13 +102,13 @@ type ManagerConfig struct {
 	// SSHSetIdentityCommand command template to set validator identity via SSH
 	// Use {ledger} as placeholder for ledger path
 	// The identity keypair will be piped to stdin
-	// Example: "agave-validator --ledger {ledger} set-identity /dev/stdin"
+	// Example: "agave-validator --ledger {ledger} set-identity stdin"
 	SSHSetIdentityCommand string `json:"ssh_set_identity_command"`
 
 	// SSHAuthorizedVoterCommand command template to add authorized voter via SSH
 	// Use {ledger} as placeholder for ledger path
 	// The identity keypair will be piped to stdin
-	// Example: "agave-validator --ledger {ledger} authorized-voter add /dev/stdin"
+	// Example: "agave-validator --ledger {ledger} authorized-voter add stdin"
 	SSHAuthorizedVoterCommand string `json:"ssh_authorized_voter_command"`
 }
 

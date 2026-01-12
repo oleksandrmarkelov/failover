@@ -27,6 +27,6 @@
   "identity_keypair_path": "/home/solana/identity.json",
   "ssh_user": "solana",
   "ssh_key_path": "~/.ssh/failover_key",
-  "ssh_set_identity_command": "agave-validator --ledger {ledger} set-identity stdin",
-  "ssh_authorized_voter_command": "agave-validator --ledger {ledger} authorized-voter add stdin"
+  "ssh_set_identity_command": "agave-validator --ledger {ledger} set-identity",
+  "ssh_authorized_voter_command": "agave-validator --ledger {ledger} authorized-voter add"
 }

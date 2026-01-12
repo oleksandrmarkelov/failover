@@ -455,49 +455,24 @@ func expandSSHKeyPath(path string) string {
 	return path
 }
 
-// sshExecuteWithIdentity executes a command via SSH with identity keypair piped to stdin
+// sshExecuteWithIdentity executes a command via SSH with identity keypair redirected to stdin
 func (m *Manager) sshExecuteWithIdentity(host, remoteCmd string) error {
-	keypairData, err := os.ReadFile(m.config.IdentityKeypairPath)
-	if err != nil {
-		return fmt.Errorf("failed to read identity keypair: %w", err)
-	}
-
 	sshKeyPath := expandSSHKeyPath(m.config.SSHKeyPath)
+	keypairPath := m.config.IdentityKeypairPath
 
-	cmd := exec.Command("ssh",
-		"-i", sshKeyPath,
-		"-T",
-		"-o", "ConnectTimeout=10",
-		"-o", "StrictHostKeyChecking=accept-new",
-		fmt.Sprintf("%s@%s", m.config.SSHUser, host),
-		remoteCmd,
-	)
+	// Build the full command with shell redirection
+	fullCmd := fmt.Sprintf("ssh -i %s -T -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new %s@%s '%s' < %s",
+		sshKeyPath, m.config.SSHUser, host, remoteCmd, keypairPath)
 
-	stdin, err := cmd.StdinPipe()
+	cmd := exec.Command("bash", "-c", fullCmd)
+	output, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("failed to create stdin pipe: %w", err)
+		return fmt.Errorf("ssh command failed: %w, output: %s", err, string(output))
 	}
 
-	var outputBuf bytes.Buffer
-	cmd.Stdout = &outputBuf
-	cmd.Stderr = &outputBuf
-
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start ssh command: %w", err)
+	if len(output) > 0 {
+		log.Printf("SSH output: %s", strings.TrimSpace(string(output)))
 	}
-
-	_, err = stdin.Write(keypairData)
-	if err != nil {
-		return fmt.Errorf("failed to write keypair to stdin: %w", err)
-	}
-	stdin.Close()
-
-	err = cmd.Wait()
-	if err != nil {
-		return fmt.Errorf("ssh command failed: %w, output: %s", err, outputBuf.String())
-	}
-
-	log.Printf("SSH output: %s", strings.TrimSpace(outputBuf.String()))
 	return nil
 }
 
@@ -505,7 +480,7 @@ func (m *Manager) sshExecuteWithIdentity(host, remoteCmd string) error {
 func (m *Manager) sshSetIdentity(host, ledgerPath string) error {
 	cmdTemplate := m.config.SSHSetIdentityCommand
 	if cmdTemplate == "" {
-		cmdTemplate = "agave-validator --ledger {ledger} set-identity /dev/stdin"
+		cmdTemplate = "agave-validator --ledger {ledger} set-identity"
 	}
 	remoteCmd := strings.ReplaceAll(cmdTemplate, "{ledger}", ledgerPath)
 	return m.sshExecuteWithIdentity(host, remoteCmd)
@@ -515,7 +490,7 @@ func (m *Manager) sshSetIdentity(host, ledgerPath string) error {
 func (m *Manager) sshAddAuthorizedVoter(host, ledgerPath string) error {
 	cmdTemplate := m.config.SSHAuthorizedVoterCommand
 	if cmdTemplate == "" {
-		cmdTemplate = "agave-validator --ledger {ledger} authorized-voter add /dev/stdin"
+		cmdTemplate = "agave-validator --ledger {ledger} authorized-voter add"
 	}
 	remoteCmd := strings.ReplaceAll(cmdTemplate, "{ledger}", ledgerPath)
 	return m.sshExecuteWithIdentity(host, remoteCmd)

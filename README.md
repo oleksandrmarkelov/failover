@@ -183,8 +183,8 @@ Add these fields to manager config:
   "identity_keypair_path": "/home/solana/identity.json",
   "ssh_user": "solana",
   "ssh_key_path": "~/.ssh/failover_key",
-  "ssh_set_identity_command": "agave-validator --ledger {ledger} set-identity stdin",
-  "ssh_authorized_voter_command": "agave-validator --ledger {ledger} authorized-voter add stdin"
+  "ssh_set_identity_command": "agave-validator --ledger {ledger} set-identity",
+  "ssh_authorized_voter_command": "agave-validator --ledger {ledger} authorized-voter add"
 }
 ```
 
@@ -213,9 +213,9 @@ ssh-copy-id -i ~/.ssh/failover_key.pub solana@VALIDATOR2_IP
 
 1. Manager sends `become_active` to agent with `skip_identity=true`
 2. Agent only restores tower file (skips identity commands)
-3. Manager SSHs to validator and pipes identity keypair to stdin:
-   - `ssh user@host "agave-validator --ledger /path set-identity stdin" < identity.json`
-   - `ssh user@host "agave-validator --ledger /path authorized-voter add stdin" < identity.json`
+3. Manager SSHs to validator with identity keypair redirected to stdin:
+   - `ssh user@host "agave-validator --ledger /path set-identity" < identity.json`
+   - `ssh user@host "agave-validator --ledger /path authorized-voter add" < identity.json`
 
 In this mode, the agent's `identity_change_command` and `active_identity_symlink_command` are ignored.
 

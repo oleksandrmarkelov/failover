@@ -603,6 +603,87 @@ func (m *Manager) performFailover(reason string) error {
 	return nil
 }
 
+// activateValidator activates the designated active validator (index 0)
+// Used when both validators are passive on startup
+func (m *Manager) activateValidator(reason string) error {
+	m.mu.Lock()
+	activeIdx := m.activeIdx
+	m.mu.Unlock()
+
+	activeValidator := m.validators[activeIdx]
+
+	log.Printf("========================================")
+	log.Printf("=== ACTIVATING VALIDATOR ===")
+	log.Printf("Reason: %s", reason)
+	log.Printf("Validator: [%s] %s", activeValidator.Name, activeValidator.Endpoint)
+	log.Printf("========================================")
+
+	if m.config.DryRun {
+		log.Printf("[DRY-RUN] Would activate validator, but dry-run is enabled")
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(m.ctx, 30*time.Second)
+	defer cancel()
+
+	if m.config.SecureIdentityMode {
+		// Secure mode: manager sends identity via SSH
+		log.Printf("Setting identity via SSH (secure mode)...")
+
+		validatorCfg := m.getValidatorEndpointConfig(activeValidator.Endpoint)
+		if validatorCfg == nil {
+			return fmt.Errorf("validator config not found for endpoint %s", activeValidator.Endpoint)
+		}
+		if validatorCfg.LedgerPath == "" {
+			return fmt.Errorf("ledger_path not configured for validator %s", activeValidator.Endpoint)
+		}
+
+		// First, tell agent to restore tower and prepare for activation (skip identity change)
+		log.Printf("Step 1: Sending become_active to agent (tower restore only)...")
+		resp, err := m.sendFailoverCommand(ctx, activeValidator, "become_active", reason, true)
+		if err != nil {
+			log.Printf("Warning: Failed to send become_active to [%s]: %v", activeValidator.Name, err)
+		} else if !resp.Success {
+			log.Printf("Warning: [%s] become_active returned: %s", activeValidator.Name, resp.Message)
+		}
+
+		// Set identity via SSH
+		log.Printf("Step 2: SSH set-identity on %s...", validatorCfg.IP)
+		if err := m.sshSetIdentity(validatorCfg.IP, validatorCfg.LedgerPath); err != nil {
+			return fmt.Errorf("failed to set identity via SSH: %w", err)
+		}
+
+		// Add authorized voter via SSH
+		log.Printf("Step 3: SSH authorized-voter add on %s...", validatorCfg.IP)
+		if err := m.sshAddAuthorizedVoter(validatorCfg.IP, validatorCfg.LedgerPath); err != nil {
+			return fmt.Errorf("failed to add authorized voter via SSH: %w", err)
+		}
+
+		log.Printf("[%s] identity set via SSH", activeValidator.Name)
+	} else {
+		// Local mode: agent has identity keypair locally
+		log.Printf("Sending become_active to [%s]...", activeValidator.Name)
+		resp, err := m.sendFailoverCommand(ctx, activeValidator, "become_active", reason, false)
+		if err != nil {
+			return fmt.Errorf("failed to send become_active: %w", err)
+		}
+		if !resp.Success {
+			return fmt.Errorf("[%s] failed to become active: %s", activeValidator.Name, resp.Message)
+		}
+		log.Printf("[%s] is now active", activeValidator.Name)
+	}
+
+	log.Printf("=== ACTIVATION COMPLETE ===")
+	log.Printf("Active: [%s] %s", activeValidator.Name, activeValidator.Endpoint)
+	log.Printf("========================================")
+
+	// Send notification
+	m.notify(fmt.Sprintf("✅ <b>VALIDATOR ACTIVATED</b>\n\nReason: %s\nValidator: %s (%s)",
+		reason, activeValidator.Name, activeValidator.Endpoint))
+
+	return nil
+}
+
 // checkAndFailover performs health check and failover if needed
 func (m *Manager) checkAndFailover() {
 	m.mu.RLock()
@@ -959,6 +1040,84 @@ func detectActiveFromGossip(cfg *config.ManagerConfig) (string, string, error) {
 		gossipIP, cfg.Validator1.IP, cfg.Validator2.IP)
 }
 
+// getAgentIdentity queries an agent for its current validator identity pubkey
+func getAgentIdentity(endpoint string, timeout time.Duration) (string, error) {
+	client := &http.Client{Timeout: timeout}
+	resp, err := client.Get(endpoint + "/identity")
+	if err != nil {
+		return "", fmt.Errorf("failed to connect: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var identityResp api.IdentityResponse
+	if err := json.NewDecoder(resp.Body).Decode(&identityResp); err != nil {
+		return "", fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	if identityResp.Error != "" {
+		return "", fmt.Errorf("agent error: %s", identityResp.Error)
+	}
+
+	return identityResp.IdentityPubkey, nil
+}
+
+// verifyAndFixIdentityState checks actual identity state and fixes if needed
+// Returns activeEndpoint, passiveEndpoint, needsActivation (if both are passive)
+func verifyAndFixIdentityState(cfg *config.ManagerConfig, gossipActive, gossipPassive string) (string, string, bool, error) {
+	if cfg.StakedIdentityPubkey == "" {
+		log.Println("staked_identity_pubkey not configured, skipping identity verification")
+		return gossipActive, gossipPassive, false, nil
+	}
+
+	timeout := cfg.RequestTimeout.Duration()
+	if timeout == 0 {
+		timeout = 5 * time.Second
+	}
+
+	log.Println("Verifying actual identity state...")
+
+	// Get identity from both agents
+	activeIdentity, activeErr := getAgentIdentity(gossipActive, timeout)
+	passiveIdentity, passiveErr := getAgentIdentity(gossipPassive, timeout)
+
+	if activeErr != nil {
+		log.Printf("WARNING: Failed to get identity from gossip-active (%s): %v", gossipActive, activeErr)
+	} else {
+		log.Printf("Gossip-active (%s) current identity: %s", gossipActive, activeIdentity)
+	}
+
+	if passiveErr != nil {
+		log.Printf("WARNING: Failed to get identity from gossip-passive (%s): %v", gossipPassive, passiveErr)
+	} else {
+		log.Printf("Gossip-passive (%s) current identity: %s", gossipPassive, passiveIdentity)
+	}
+
+	// If we couldn't get identity from either, proceed with gossip-based assignment
+	if activeErr != nil && passiveErr != nil {
+		log.Println("WARNING: Could not verify identity from either agent, using gossip-based assignment")
+		return gossipActive, gossipPassive, false, nil
+	}
+
+	stakedPubkey := cfg.StakedIdentityPubkey
+
+	// Case 1: Gossip-active has staked identity - normal state
+	if activeIdentity == stakedPubkey {
+		log.Println("OK: Gossip-active validator has staked identity (normal state)")
+		return gossipActive, gossipPassive, false, nil
+	}
+
+	// Case 2: Gossip-passive has staked identity - swap them
+	if passiveIdentity == stakedPubkey {
+		log.Println("WARNING: Gossip-passive has staked identity, swapping active/passive assignment")
+		return gossipPassive, gossipActive, false, nil
+	}
+
+	// Case 3: Neither has staked identity - both are passive
+	log.Println("WARNING: Neither validator has staked identity - both are passive!")
+	log.Println("Will activate gossip-active validator after manager starts")
+	return gossipActive, gossipPassive, true, nil
+}
+
 func main() {
 	// Command line flags
 	configFile := flag.String("config", "", "Path to config file")
@@ -1029,6 +1188,7 @@ func main() {
 	}
 
 	// Auto-detect active/passive from gossip if not explicitly set
+	var needsActivation bool
 	if cfg.ActiveValidator == "" || cfg.PassiveValidator == "" {
 		if cfg.GossipCheckCommand != "" && cfg.Validator1.Endpoint != "" && cfg.Validator2.Endpoint != "" {
 			log.Println("Auto-detecting active/passive validators from gossip...")
@@ -1036,6 +1196,13 @@ func main() {
 			if err != nil {
 				log.Fatalf("Failed to detect active/passive from gossip: %v", err)
 			}
+
+			// Verify actual identity state and fix if needed
+			activeEndpoint, passiveEndpoint, needsActivation, err = verifyAndFixIdentityState(cfg, activeEndpoint, passiveEndpoint)
+			if err != nil {
+				log.Fatalf("Failed to verify identity state: %v", err)
+			}
+
 			cfg.ActiveValidator = activeEndpoint
 			cfg.PassiveValidator = passiveEndpoint
 		} else if cfg.ActiveValidator == "" || cfg.PassiveValidator == "" {
@@ -1071,6 +1238,16 @@ func main() {
 	}
 
 	manager := NewManager(cfg)
+
+	// If both validators were passive, activate the designated active one
+	if needsActivation {
+		log.Println("=== ACTIVATING PASSIVE VALIDATOR ===")
+		log.Printf("Both validators are passive, activating: %s", cfg.ActiveValidator)
+		if err := manager.activateValidator("both validators passive on startup"); err != nil {
+			log.Fatalf("Failed to activate validator: %v", err)
+		}
+		log.Println("=== ACTIVATION COMPLETE ===")
+	}
 
 	// Handle graceful shutdown
 	sigChan := make(chan os.Signal, 1)

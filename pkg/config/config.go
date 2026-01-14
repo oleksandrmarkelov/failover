@@ -110,6 +110,12 @@ type ManagerConfig struct {
 	// The identity keypair file will be redirected to stdin via shell redirection
 	// Example: "agave-validator --ledger {ledger} authorized-voter add"
 	SSHAuthorizedVoterCommand string `json:"ssh_authorized_voter_command"`
+
+	// StakedIdentityPubkey is the expected public key of the staked identity
+	// Used on startup to verify which validator is actually active (voting)
+	// by comparing with the identity reported by each agent
+	// Example: "DQx6XD5fWQ2Pbkg4Fi4gVzLbGg6c4ST7ZgXTawZZAXEY"
+	StakedIdentityPubkey string `json:"staked_identity_pubkey"`
 }
 
 // ValidatorConfig is the configuration for the validator program
@@ -186,6 +192,11 @@ type ValidatorConfig struct {
 	// Used when manager sends shutdown command
 	// Example: "sudo systemctl stop failover-agent"
 	AgentStopCommand string `json:"agent_stop_command"`
+
+	// IdentityCheckCommand command to get current validator identity pubkey
+	// Used by manager on startup to verify actual identity state
+	// Example: "solana-keygen pubkey /home/solana/identity.json"
+	IdentityCheckCommand string `json:"identity_check_command"`
 
 	// DryRun if true, don't execute commands, just log them
 	DryRun bool `json:"dry_run"`

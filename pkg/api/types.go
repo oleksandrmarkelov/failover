@@ -130,6 +130,18 @@ type ShutdownResponse struct {
 	Timestamp int64 `json:"timestamp"`
 }
 
+// IdentityResponse is returned by agent to report current validator identity
+type IdentityResponse struct {
+	// IdentityPubkey is the current validator identity pubkey
+	IdentityPubkey string `json:"identity_pubkey"`
+
+	// Error contains any error message
+	Error string `json:"error,omitempty"`
+
+	// Timestamp when response was generated
+	Timestamp int64 `json:"timestamp"`
+}
+
 // HealthCheckInterval constants
 const (
 	DefaultHeartbeatInterval    = 5 * time.Second

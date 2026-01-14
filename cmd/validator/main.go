@@ -784,6 +784,34 @@ func (va *ValidatorAgent) handleShutdown(w http.ResponseWriter, r *http.Request)
 	}()
 }
 
+// handleIdentity returns the current validator identity pubkey
+func (va *ValidatorAgent) handleIdentity(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	response := api.IdentityResponse{
+		Timestamp: time.Now().Unix(),
+	}
+
+	if va.config.IdentityCheckCommand == "" {
+		response.Error = "identity_check_command not configured"
+		va.sendJSON(w, response)
+		return
+	}
+
+	output, err := va.executeCommand(va.config.IdentityCheckCommand, false)
+	if err != nil {
+		response.Error = fmt.Sprintf("failed to get identity: %v", err)
+		va.sendJSON(w, response)
+		return
+	}
+
+	response.IdentityPubkey = strings.TrimSpace(output)
+	va.sendJSON(w, response)
+}
+
 // sendJSON sends a JSON response
 func (va *ValidatorAgent) sendJSON(w http.ResponseWriter, data interface{}) {
 	w.Header().Set("Content-Type", "application/json")
@@ -912,6 +940,7 @@ func (va *ValidatorAgent) Start() error {
 	http.HandleFunc("/peer-status", va.handlePeerStatus)
 	http.HandleFunc("/failover", va.handleFailover)
 	http.HandleFunc("/shutdown", va.handleShutdown)
+	http.HandleFunc("/identity", va.handleIdentity)
 
 	// Start background loop for manager watch
 	// Note: Tower backup is now done on each status request from manager

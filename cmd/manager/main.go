@@ -876,24 +876,32 @@ func sendShutdownCommand(endpoint string, timeout time.Duration) error {
 }
 
 // shutdownAgents sends shutdown commands to all configured agents
+// Shuts down active first, then passive only if active succeeded
 func shutdownAgents(cfg *config.ManagerConfig) {
 	timeout := cfg.RequestTimeout.Duration()
 	if timeout == 0 {
 		timeout = 5 * time.Second
 	}
 
-	endpoints := []string{cfg.ActiveValidator, cfg.PassiveValidator}
+	// Shutdown active first
+	if cfg.ActiveValidator != "" {
+		log.Printf("Sending shutdown command to active agent at %s...", cfg.ActiveValidator)
+		if err := sendShutdownCommand(cfg.ActiveValidator, timeout); err != nil {
+			log.Printf("ERROR: Failed to shutdown active agent at %s: %v", cfg.ActiveValidator, err)
+			log.Printf("Skipping passive agent shutdown due to active agent failure")
+			return
+		}
+		log.Printf("Active agent at %s acknowledged shutdown", cfg.ActiveValidator)
+	}
 
-	for _, endpoint := range endpoints {
-		if endpoint == "" {
-			continue
+	// Shutdown passive only if active succeeded
+	if cfg.PassiveValidator != "" {
+		log.Printf("Sending shutdown command to passive agent at %s...", cfg.PassiveValidator)
+		if err := sendShutdownCommand(cfg.PassiveValidator, timeout); err != nil {
+			log.Printf("ERROR: Failed to shutdown passive agent at %s: %v", cfg.PassiveValidator, err)
+			return
 		}
-		log.Printf("Sending shutdown command to agent at %s...", endpoint)
-		if err := sendShutdownCommand(endpoint, timeout); err != nil {
-			log.Printf("Failed to shutdown agent at %s: %v", endpoint, err)
-		} else {
-			log.Printf("Agent at %s acknowledged shutdown", endpoint)
-		}
+		log.Printf("Passive agent at %s acknowledged shutdown", cfg.PassiveValidator)
 	}
 }
 

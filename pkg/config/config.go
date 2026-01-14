@@ -195,7 +195,8 @@ type ValidatorConfig struct {
 
 	// IdentityCheckCommand command to get current validator identity pubkey
 	// Used by manager on startup to verify actual identity state
-	// Example: "solana-keygen pubkey /home/solana/identity.json"
+	// Use {local_rpc} as placeholder for local RPC endpoint
+	// Example: "curl -s {local_rpc} -X POST -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getIdentity\"}' | jq -r '.result.identity'"
 	IdentityCheckCommand string `json:"identity_check_command"`
 
 	// DryRun if true, don't execute commands, just log them

@@ -801,7 +801,10 @@ func (va *ValidatorAgent) handleIdentity(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	output, err := va.executeCommand(va.config.IdentityCheckCommand, false)
+	// Replace {local_rpc} placeholder with actual value
+	cmd := strings.ReplaceAll(va.config.IdentityCheckCommand, "{local_rpc}", va.config.LocalRPC)
+
+	output, err := va.executeCommand(cmd, false)
 	if err != nil {
 		response.Error = fmt.Sprintf("failed to get identity: %v", err)
 		va.sendJSON(w, response)

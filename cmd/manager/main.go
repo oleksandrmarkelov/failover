@@ -1107,6 +1107,10 @@ func verifyAndFixIdentityState(cfg *config.ManagerConfig, gossipActive, gossipPa
 
 	stakedPubkey := cfg.StakedIdentityPubkey
 
+	log.Printf("Expected staked identity: %s", stakedPubkey)
+	log.Printf("Gossip-active identity:   %s (match: %v)", activeIdentity, activeIdentity == stakedPubkey)
+	log.Printf("Gossip-passive identity:  %s (match: %v)", passiveIdentity, passiveIdentity == stakedPubkey)
+
 	// Case 1: Gossip-active has staked identity - normal state
 	if activeIdentity == stakedPubkey {
 		log.Println("OK: Gossip-active validator has staked identity (normal state)")

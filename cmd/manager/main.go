@@ -466,12 +466,19 @@ func (m *Manager) sshExecuteWithIdentity(host, remoteCmd string) error {
 
 	cmd := exec.Command("bash", "-c", fullCmd)
 	output, err := cmd.CombinedOutput()
+	outputStr := string(output)
+
 	if err != nil {
-		return fmt.Errorf("ssh command failed: %w, output: %s", err, string(output))
+		// "Authorized voter already present" is not an error - it means the voter was already added
+		if strings.Contains(outputStr, "already present") {
+			log.Printf("SSH output: %s (treated as success)", strings.TrimSpace(outputStr))
+			return nil
+		}
+		return fmt.Errorf("ssh command failed: %w, output: %s", err, outputStr)
 	}
 
 	if len(output) > 0 {
-		log.Printf("SSH output: %s", strings.TrimSpace(string(output)))
+		log.Printf("SSH output: %s", strings.TrimSpace(outputStr))
 	}
 	return nil
 }

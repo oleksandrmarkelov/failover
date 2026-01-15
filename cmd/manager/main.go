@@ -1140,20 +1140,9 @@ func main() {
 	requestTimeout := flag.Duration("timeout", 5*time.Second, "Request timeout")
 	dryRun := flag.Bool("dry-run", true, "Dry-run mode (don't trigger failover)")
 	logFile := flag.String("log-file", "", "Path to log file (logs to both console and file)")
-	generateConfig := flag.Bool("generate-config", false, "Generate example config file")
 	shutdownAgent := flag.Bool("shutdown-agent", false, "Send shutdown command to all agents and exit")
 
 	flag.Parse()
-
-	// Generate example config if requested
-	if *generateConfig {
-		cfg := config.DefaultManagerConfig()
-		if err := config.SaveConfig("manager-config.json", cfg); err != nil {
-			log.Fatalf("Failed to generate config: %v", err)
-		}
-		log.Printf("Generated example config: manager-config.json")
-		return
-	}
 
 	var cfg *config.ManagerConfig
 	var err error

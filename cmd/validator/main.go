@@ -931,19 +931,8 @@ func main() {
 	isActive := flag.Bool("active", false, "Start as active validator")
 	dryRun := flag.Bool("dry-run", true, "Dry-run mode (don't execute commands)")
 	logFile := flag.String("log-file", "", "Path to log file (logs to both console and file)")
-	generateConfig := flag.Bool("generate-config", false, "Generate example config file")
 
 	flag.Parse()
-
-	// Generate example config if requested
-	if *generateConfig {
-		cfg := config.DefaultValidatorConfig()
-		if err := config.SaveConfig("validator-config.json", cfg); err != nil {
-			log.Fatalf("Failed to generate config: %v", err)
-		}
-		log.Printf("Generated example config: validator-config.json")
-		return
-	}
 
 	var cfg *config.ValidatorConfig
 	var err error

@@ -131,6 +131,7 @@ Create `validator-config.json` on each server (replace IDENTITY, IP, LEDGER_PATH
   "passive_identity_symlink_command": "ln -sf IDENTITY_PATH/unstaked-identity.json IDENTITY_PATH/identity.json"
 }
 ```
+In case of secure mode the fields active_identity_symlink_command and  identity_change_command are not needed.
 
 Run as service:
 ```bash
@@ -295,26 +296,7 @@ In this mode, the agent's `identity_change_command` and `active_identity_symlink
 | `/status` | POST | Returns validator status (used by manager) |
 | `/failover` | POST | Execute failover command |
 | `/shutdown` | POST | Shutdown the agent |
-
-## Dry-Run Mode
-
-**IMPORTANT**: Both programs start with `dry_run: true` by default.
-
-This means:
-- Manager will log "would failover" but not send failover commands
-- Validator will log "would execute" but not run shell commands
-
-To enable actual failover:
-```bash
-# Command line
---dry-run=false
-
-# Environment variable
-DRY_RUN=false
-
-# Config file
-"dry_run": false
-```
+| `/identity` | GET | Returns current validator identity pubkey |
 
 ## Telegram Notifications
 

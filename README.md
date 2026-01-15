@@ -36,6 +36,10 @@ Add the following line (replace `solana` with your user):
 solana ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop failover-agent, /usr/bin/systemctl restart solana
 ```
 
+### 5. Secure Identity mode (in case of enabled)
+
+In secure mode the identity keypair is located only on the manager server. This requires ssh passwordless access from manager to agent server. Please check the configuration below.
+
 ## Architecture
 
 ```
@@ -58,8 +62,8 @@ solana ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop failover-agent, /usr/bin/syst
         v                                            v
   +--------------+                           +--------------+
   | VALIDATOR 1  |                           | VALIDATOR 2  |
-  |              |<------------------------->|              |
-  |  Agent       |       peer heartbeat      |  Agent       |
+  |              |                           |              |
+  |  Agent       |                           |  Agent       |
   |  agave-valid |                           |  agave-valid |
   |  (active)    |                           |  (passive)   |
   +--------------+                           +--------------+
@@ -82,7 +86,7 @@ solana ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop failover-agent, /usr/bin/syst
 - Responds to manager health checks
 - Reports process status and slot information
 - Backs up tower file to etcd on each manager ping
-- Monitors manager heartbeat - if manager goes offline, checks peer
+- Monitors manager heartbeat - if manager goes offline, checks external network connectivity
 - Executes identity change commands on failover
 - Removes tower file when becoming passive (prevents stale tower)
 - Remote shutdown endpoint
@@ -105,15 +109,13 @@ then active validator agent and afterward manager.
 
 ### 2. Configure Agents (on each validator server)
 
-Create `validator-config.json` on each server (replace IDENTITY, IP, PEER_IP (ip of second agent), LEDGER_PATH, SOLANA_PATH and IDENTITY_PATH):
+Create `validator-config.json` on each server (replace IDENTITY, IP, LEDGER_PATH, SOLANA_PATH and IDENTITY_PATH):
 ```json
 {
   "listen_addr": ":8080",
   "local_rpc": "http://127.0.0.1:8899",
   "process_name": "agave-validator",
-  "peer_endpoint": "http://PEPEER_IP:8080",
-  "is_active_on_start": false,
-  "manager_timeout": "30s",
+  "manager_timeout": "15s",
   "tower_backup_command": "etcdctl put /solana/tower/active \"$(base64 -w0 LEDGER_PATH/tower-1_9-*.bin)\"",
   "tower_restore_command": "etcdctl get /solana/tower/active --print-value-only | base64 -d > LEDGER_PATH/tower-1_9-IDENTITY.bin",
   "identity_change_command": "SOLANA_PATH/agave-validator  -l LEDGER_PATH set-identity IDENTITY_PATH/testnet-validator-keypair.json",
@@ -121,8 +123,7 @@ Create `validator-config.json` on each server (replace IDENTITY, IP, PEER_IP (ip
   "dry_run": false,
   "tower_file_path": "LEDGER_PATH/tower-1_9-{validator_identity}.bin",
   "validator_identity": "IDENTITY",
-  "gossip_check_command": "solana -ut gossip | grep {validator_identity}",
-  "local_ip": "IP",
+  "gossip_check_command": "SOLANA_PATH/solana -ut gossip | grep {validator_identity}",
   "log_file": "/home/solana/failover/agent.log",
   "validator_restart_command": "sudo systemctl restart solana",
   "agent_stop_command": "sudo systemctl stop failover-agent",
@@ -130,7 +131,6 @@ Create `validator-config.json` on each server (replace IDENTITY, IP, PEER_IP (ip
   "passive_identity_symlink_command": "ln -sf IDENTITY_PATH/unstaked-identity.json IDENTITY_PATH/identity.json"
 }
 ```
-Fields "is_active_on_start" and "local_ip" are optional. If not provided, the agent will retrieve it from gossip and use the local IP address.
 
 Run as service:
 ```bash
@@ -139,7 +139,7 @@ Run as service:
 
 ### 2. Configure Manager (on manager server)
 
-Create `manager-config.json`:
+Create `manager-config.json` for identity located on agent's server, example is for testnet:
 ```json
 {
   "validator1": {
@@ -155,13 +155,14 @@ Create `manager-config.json`:
   "gossip_check_command": "solana -ut gossip | grep IDENTITY",
   "cluster_rpc": "https://api.testnet.solana.com",
   "heartbeat_interval": "5s",
-  "misses_before_failover": 5,
+  "misses_before_failover": 3,
   "slot_diff_threshold": 100,
   "request_timeout": "5s",
   "dry_run": false,
   "telegram_bot_token": "BOT_TOKEN",
   "telegram_chat_id": "-CHAT_ID",
-  "log_file": "/home/solana/failover/manager.log"
+  "log_file": "/home/solana/failover/manager.log",
+  "staked_identity_pubkey": "IDENTITY"
 }
 ```
 
@@ -180,11 +181,11 @@ Add these fields to manager config:
 ```json
 {
   "secure_identity_mode": true,
-  "identity_keypair_path": "/home/solana/identity.json",
+  "identity_keypair_path": "IDENTITY_PATH/identity.json",
   "ssh_user": "solana",
   "ssh_key_path": "~/.ssh/failover_key",
-  "ssh_set_identity_command": "agave-validator --ledger {ledger} set-identity",
-  "ssh_authorized_voter_command": "agave-validator --ledger {ledger} authorized-voter add"
+  "ssh_set_identity_command": "SOLANA_PATH/agave-validator --ledger {ledger} set-identity",
+  "ssh_authorized_voter_command": "SOLANA_PATH/agave-validator --ledger {ledger} authorized-voter add"
 }
 ```
 
@@ -219,35 +220,6 @@ ssh-copy-id -i ~/.ssh/failover_key.pub solana@VALIDATOR2_IP
 
 In this mode, the agent's `identity_change_command` and `active_identity_symlink_command` are ignored.
 
-
-
-## Auto-Detection from Gossip
-
-Both manager and agents can automatically detect which validator is currently active by checking Solana gossip.
-
-### How it works
-
-1. Run gossip command: `solana -ut gossip | grep VALIDATOR_IDENTITY`
-2. Parse the IP from the first column of output
-3. Compare with configured IPs to determine active validator
-
-Example gossip output:
-```
-80.251.153.166  | IDENTITY_ID | 8001   | 8004  | 8010     | 80.251.153.166:8899
-```
-
-### Agent Configuration
-
-The agent uses `gossip_check_command` and `local_ip` to auto-detect on startup:
-```json
-{
-  "gossip_check_command": "solana -ut gossip | grep YOUR_VALIDATOR_PUBKEY",
-  "local_ip": "80.251.153.166"
-}
-```
-
-If gossip IP matches `local_ip`, the agent starts as active. Falls back to `is_active_on_start` if gossip check fails.
-
 ## Manager Commands
 
 ```bash
@@ -259,9 +231,6 @@ If gossip IP matches `local_ip`, the agent starts as active. Falls back to `is_a
 
 # Shutdown all agents remotely
 ./failover-manager --config manager-config.json --shutdown-agent
-
-# Generate example config
-./failover-manager --generate-config
 ```
 
 ### Manager Flags
@@ -292,10 +261,7 @@ If gossip IP matches `local_ip`, the agent starts as active. Falls back to `is_a
 ./failover-agent --config validator-config.json
 
 # Run with flags
-./failover-agent --listen :8080 --rpc http://127.0.0.1:8899 --peer http://peer:8080
-
-# Generate example config
-./failover-agent --generate-config
+./failover-agent --listen :8080 --rpc http://127.0.0.1:8899
 ```
 
 ## Failover Process
@@ -315,10 +281,10 @@ If gossip IP matches `local_ip`, the agent starts as active. Falls back to `is_a
 
 ### When Manager Goes Offline
 
-1. Active agent detects no manager heartbeat for 30s
-2. Active agent checks peer status
-3. If peer is already active: become passive (avoid split-brain)
-4. If peer is passive: stay active, wait for manager
+1. Active agent detects no manager heartbeat for 15s
+2. Active agent checks external network connectivity (tests Cloudflare, Google, and Quad9 DNS endpoints)
+3. If network check fails (cannot reach 2+ endpoints): become passive to avoid split-brain
+4. If network is available: stay active and wait for manager to come back
 
 ## API Endpoints
 
@@ -327,7 +293,6 @@ If gossip IP matches `local_ip`, the agent starts as active. Falls back to `is_a
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/status` | POST | Returns validator status (used by manager) |
-| `/peer-status` | POST | Returns peer status (used by other validator) |
 | `/failover` | POST | Execute failover command |
 | `/shutdown` | POST | Shutdown the agent |
 
@@ -375,13 +340,3 @@ The manager can send notifications to Telegram for critical events:
 
 For group chats, the chat ID is negative. For private chats, use your user ID.
 
-## Safety Features
-
-1. **Dry-run mode**: Test without risk
-2. **Multiple misses required**: Single network blip won't trigger failover
-3. **Peer check**: If manager dies, active validator checks peer before action
-4. **Tower backup**: Continuous tower file backup prevents slashing
-5. **Tower removal**: Tower file deleted when becoming passive
-6. **Gossip-based detection**: Automatic active/passive detection
-7. **Telegram alerts**: Instant notifications for critical events
-8. **Logging**: All actions logged for audit

@@ -287,6 +287,28 @@ In this mode, the agent's `identity_change_command` and `active_identity_symlink
 3. If network check fails (cannot reach 2+ endpoints): become passive to avoid split-brain
 4. If network is available: stay active and wait for manager to come back
 
+## Stopping the Failover System
+
+To safely shutdown the failover system:
+
+1. **Stop the manager first:**
+   ```bash
+   # Stop the manager service
+   sudo systemctl stop failover-manager
+   # OR if running manually
+   Ctrl+C
+   ```
+
+2. **Stop both agents simultaneously:**
+   ```bash
+   # From the manager server, send shutdown command to all agents
+   ./failover-manager --config manager-config.json --shutdown-agent
+   ```
+
+This ensures both validator agents are stopped at the same time, preventing either from detecting the other as unavailable and triggering unnecessary failover logic.
+
+**Note:** The `--shutdown-agent` command requires the manager binary but does not start the manager service. It only sends shutdown commands to the configured agent endpoints.
+
 ## API Endpoints
 
 ### Validator Agent

@@ -129,9 +129,6 @@ type ValidatorConfig struct {
 	// ProcessName name of the validator process to monitor
 	ProcessName string `json:"process_name"`
 
-	// PeerEndpoint the other validator's endpoint for peer check
-	PeerEndpoint string `json:"peer_endpoint"`
-
 	// IsActiveOnStart whether this validator starts as active
 	IsActiveOnStart bool `json:"is_active_on_start"`
 
@@ -326,7 +323,6 @@ func DefaultValidatorConfig() *ValidatorConfig {
 		ListenAddr:            ":8080",
 		LocalRPC:              "http://127.0.0.1:8899",
 		ProcessName:           "agave-validator",
-		PeerEndpoint:          "http://192.168.1.11:8080",
 		IsActiveOnStart:       false,
 		ManagerTimeout:        Duration(30 * time.Second),
 		TowerBackupCommand:    "echo 'tower backup command not configured'",

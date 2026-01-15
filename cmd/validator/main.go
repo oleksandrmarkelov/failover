@@ -1,12 +1,10 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
@@ -537,46 +535,35 @@ func (va *ValidatorAgent) becomePassive(reason string) error {
 	return nil
 }
 
-// checkPeerStatus checks if peer validator is alive and its status
-func (va *ValidatorAgent) checkPeerStatus(ctx context.Context) (*api.PeerStatusResponse, error) {
-	if va.config.PeerEndpoint == "" {
-		return nil, fmt.Errorf("peer endpoint not configured")
+// checkNetworkConnectivity checks if we have network connectivity by testing
+// multiple well-known external endpoints. This is more reliable than checking
+// a single peer, as it avoids false positives when peer is down but network is fine.
+// Returns true if we can reach at least 2 out of 3 endpoints.
+func (va *ValidatorAgent) checkNetworkConnectivity(ctx context.Context) bool {
+	endpoints := []string{
+		"1.1.1.1:53", // Cloudflare DNS
+		"8.8.8.8:53", // Google DNS
+		"9.9.9.9:53", // Quad9 DNS
 	}
 
-	reqBody := api.PeerStatusRequest{
-		FromValidator: va.config.ListenAddr,
-		Timestamp:     time.Now().Unix(),
+	successCount := 0
+	for _, endpoint := range endpoints {
+		// Create a dialer that respects context cancellation
+		dialer := &net.Dialer{
+			Timeout: 2 * time.Second,
+		}
+		conn, err := dialer.DialContext(ctx, "tcp", endpoint)
+		if err == nil {
+			conn.Close()
+			successCount++
+			log.Printf("Network check: %s reachable", endpoint)
+		} else {
+			log.Printf("Network check: %s unreachable: %v", endpoint, err)
+		}
 	}
 
-	jsonBody, err := json.Marshal(reqBody)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
-	}
-
-	url := fmt.Sprintf("%s/peer-status", strings.TrimSuffix(va.config.PeerEndpoint, "/"))
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewBuffer(jsonBody))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := va.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to send request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("peer returned status %d: %s", resp.StatusCode, string(body))
-	}
-
-	var peerResp api.PeerStatusResponse
-	if err := json.NewDecoder(resp.Body).Decode(&peerResp); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	return &peerResp, nil
+	log.Printf("Network connectivity check: %d/%d endpoints reachable", successCount, len(endpoints))
+	return successCount >= 2
 }
 
 // handleStatus handles the /status endpoint (from manager)
@@ -672,27 +659,6 @@ func (va *ValidatorAgent) handleStatus(w http.ResponseWriter, r *http.Request) {
 			}
 		}()
 	}
-}
-
-// handlePeerStatus handles the /peer-status endpoint (from other validator)
-func (va *ValidatorAgent) handlePeerStatus(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	va.mu.RLock()
-	response := api.PeerStatusResponse{
-		IsAlive:        true,
-		IsActive:       va.isActive,
-		ProcessRunning: va.isProcessRunning(),
-		Timestamp:      time.Now().Unix(),
-	}
-	va.mu.RUnlock()
-
-	log.Printf("Peer status request: IsActive=%v, ProcessRunning=%v", response.IsActive, response.ProcessRunning)
-
-	va.sendJSON(w, response)
 }
 
 // handleFailover handles the /failover endpoint (from manager)
@@ -902,34 +868,26 @@ func (va *ValidatorAgent) managerWatchLoop() {
 
 			if noPingsReceived || echoAckFailing {
 
-				// Before doing anything, check if peer is alive
-				ctx, cancel := context.WithTimeout(va.ctx, 5*time.Second)
-				peerStatus, err := va.checkPeerStatus(ctx)
+				// Check if we have network connectivity by testing multiple external endpoints
+				// This is more reliable than checking a single peer machine
+				ctx, cancel := context.WithTimeout(va.ctx, 10*time.Second)
+				hasNetwork := va.checkNetworkConnectivity(ctx)
 				cancel()
 
-				if err != nil {
-					// Can't reach manager AND can't reach peer
+				if !hasNetwork {
+					// Can't reach manager AND can't reach external network
 					// This indicates we (active) have a network problem
 					// Safe action: become passive to avoid voting while isolated
-					log.Printf("CRITICAL: Cannot reach manager AND cannot reach peer!")
+					log.Printf("CRITICAL: Cannot reach manager AND cannot reach external network!")
 					log.Printf("This indicates network isolation. Becoming passive for safety.")
-					if err := va.becomePassive("Network isolation - cannot reach manager or peer"); err != nil {
-						log.Printf("Failed to become passive: %v", err)
-					}
-					continue
-				}
-
-				log.Printf("Peer status: IsAlive=%v, IsActive=%v, ProcessRunning=%v",
-					peerStatus.IsAlive, peerStatus.IsActive, peerStatus.ProcessRunning)
-
-				// If peer is already active, we should become passive
-				if peerStatus.IsActive {
-					log.Printf("Peer is active and manager is down. Becoming passive to avoid split-brain.")
-					if err := va.becomePassive("Peer is active, manager down"); err != nil {
+					if err := va.becomePassive("Network isolation - cannot reach manager or external network"); err != nil {
 						log.Printf("Failed to become passive: %v", err)
 					}
 				} else {
-					log.Printf("Peer is passive. Staying active. Waiting for manager to come back.")
+					// Network is fine, manager is just unavailable
+					// Stay active and wait for manager to come back
+					log.Printf("Network connectivity confirmed. Manager unavailable but network is fine.")
+					log.Printf("Staying active. Waiting for manager to come back.")
 				}
 			}
 		}
@@ -940,7 +898,6 @@ func (va *ValidatorAgent) managerWatchLoop() {
 func (va *ValidatorAgent) Start() error {
 	// Register HTTP handlers
 	http.HandleFunc("/status", va.handleStatus)
-	http.HandleFunc("/peer-status", va.handlePeerStatus)
 	http.HandleFunc("/failover", va.handleFailover)
 	http.HandleFunc("/shutdown", va.handleShutdown)
 	http.HandleFunc("/identity", va.handleIdentity)
@@ -953,7 +910,6 @@ func (va *ValidatorAgent) Start() error {
 	log.Printf("Listen address: %s", va.config.ListenAddr)
 	log.Printf("Local RPC: %s", va.config.LocalRPC)
 	log.Printf("Process name: %s", va.config.ProcessName)
-	log.Printf("Peer endpoint: %s", va.config.PeerEndpoint)
 	log.Printf("Is active on start: %v", va.isActive)
 	log.Printf("Dry-run mode: %v", va.config.DryRun)
 	log.Printf("================================")
@@ -972,7 +928,6 @@ func main() {
 	listenAddr := flag.String("listen", ":8080", "Address to listen on")
 	localRPC := flag.String("rpc", "http://127.0.0.1:8899", "Local validator RPC endpoint")
 	processName := flag.String("process", "agave-validator", "Process name to monitor")
-	peerEndpoint := flag.String("peer", "", "Peer validator endpoint")
 	isActive := flag.Bool("active", false, "Start as active validator")
 	dryRun := flag.Bool("dry-run", true, "Dry-run mode (don't execute commands)")
 	logFile := flag.String("log-file", "", "Path to log file (logs to both console and file)")
@@ -1004,7 +959,6 @@ func main() {
 			ListenAddr:            *listenAddr,
 			LocalRPC:              *localRPC,
 			ProcessName:           *processName,
-			PeerEndpoint:          *peerEndpoint,
 			IsActiveOnStart:       *isActive,
 			ManagerTimeout:        config.Duration(30 * time.Second),
 			TowerBackupCommand:    "echo 'tower backup not configured'",
@@ -1022,9 +976,7 @@ func main() {
 	if env := os.Getenv("VALIDATOR_RPC"); env != "" {
 		cfg.LocalRPC = env
 	}
-	if env := os.Getenv("VALIDATOR_PEER"); env != "" {
-		cfg.PeerEndpoint = env
-	}
+
 	if os.Getenv("VALIDATOR_DRY_RUN") == "false" {
 		cfg.DryRun = false
 	}

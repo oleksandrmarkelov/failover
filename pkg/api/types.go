@@ -85,30 +85,6 @@ type FailoverResponse struct {
 	Timestamp int64 `json:"timestamp"`
 }
 
-// PeerStatusRequest is sent between validators to check peer status
-type PeerStatusRequest struct {
-	// FromValidator identifies the sender
-	FromValidator string `json:"from_validator"`
-
-	// Timestamp when request was sent
-	Timestamp int64 `json:"timestamp"`
-}
-
-// PeerStatusResponse is returned to peer validator
-type PeerStatusResponse struct {
-	// IsAlive indicates the peer is alive
-	IsAlive bool `json:"is_alive"`
-
-	// IsActive indicates if peer is the active validator
-	IsActive bool `json:"is_active"`
-
-	// ProcessRunning indicates if agave-validator is running on peer
-	ProcessRunning bool `json:"process_running"`
-
-	// Timestamp when response was generated
-	Timestamp int64 `json:"timestamp"`
-}
-
 // ShutdownCommand is sent by manager to shut down an agent
 type ShutdownCommand struct {
 	// Reason for the shutdown

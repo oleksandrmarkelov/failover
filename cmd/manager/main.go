@@ -1187,6 +1187,23 @@ func main() {
 		cfg.DryRun = false
 	}
 
+	// Setup logging early (console + file if specified)
+	// This must happen before auto-detection so all logs are captured
+	logFilePath := cfg.LogFile
+	if *logFile != "" {
+		logFilePath = *logFile
+	}
+	if env := os.Getenv("MANAGER_LOG_FILE"); env != "" {
+		logFilePath = env
+	}
+	logCloser, err := logging.SetupLogging(logFilePath)
+	if err != nil {
+		log.Fatalf("Failed to setup logging: %v", err)
+	}
+	if logCloser != nil {
+		defer logCloser.Close()
+	}
+
 	// Auto-detect active/passive from gossip if not explicitly set
 	var needsActivation bool
 	if cfg.ActiveValidator == "" || cfg.PassiveValidator == "" {
@@ -1219,22 +1236,6 @@ func main() {
 		shutdownAgents(cfg)
 		log.Println("=== Shutdown commands sent ===")
 		return
-	}
-
-	// Setup logging (console + file if specified)
-	logFilePath := cfg.LogFile
-	if *logFile != "" {
-		logFilePath = *logFile
-	}
-	if env := os.Getenv("MANAGER_LOG_FILE"); env != "" {
-		logFilePath = env
-	}
-	logCloser, err := logging.SetupLogging(logFilePath)
-	if err != nil {
-		log.Fatalf("Failed to setup logging: %v", err)
-	}
-	if logCloser != nil {
-		defer logCloser.Close()
 	}
 
 	manager := NewManager(cfg)

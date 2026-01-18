@@ -2,8 +2,6 @@
   "listen_addr": ":8080",
   "local_rpc": "http://127.0.0.1:8899",
   "process_name": "agave-validator",
-  "peer_endpoint": "http://PEER_SERVER_IP:8080",
-  "is_active_on_start": false,
   "manager_timeout": "30s",
   "tower_backup_command": "etcdctl put /solana/tower/$(hostname) \"$(cat /path/to/ledger/tower-1_9-YOUR_IDENTITY.bin | base64)\"",
   "tower_restore_command": "etcdctl get /solana/tower/active --print-value-only | base64 -d > /path/to/ledger/tower-1_9-YOUR_IDENTITY.bin",

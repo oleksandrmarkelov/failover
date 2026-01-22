@@ -221,50 +221,6 @@ ssh-copy-id -i ~/.ssh/failover_key.pub solana@VALIDATOR2_IP
 
 In this mode, the agent's `identity_change_command` and `active_identity_symlink_command` are ignored.
 
-## Manager Commands
-
-```bash
-# Run with config file
-./failover-manager --config manager-config.json
-
-# Run with explicit endpoints (no auto-detection)
-./failover-manager --active http://host1:8080 --passive http://host2:8080
-
-# Shutdown all agents remotely
-./failover-manager --config manager-config.json --shutdown-agent
-```
-
-### Manager Flags
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--config` | | Path to config file |
-| `--active` | | Active validator endpoint |
-| `--passive` | | Passive validator endpoint |
-| `--interval` | 5s | Heartbeat interval |
-| `--misses` | 5 | Misses before failover |
-| `--slot-threshold` | 100 | Max slot difference |
-| `--timeout` | 5s | Request timeout |
-| `--dry-run` | true | Don't trigger failover |
-| `--shutdown-agent` | false | Send shutdown to agents and exit |
-| `--log-file` | | Log to file |
-
-### Manager Config Options
-
-| Field | Default | Description |
-|-------|---------|-------------|
-| `startup_grace_period` | 2m | Duration after startup during which no failover is triggered. Allows time to verify configuration. |
-
-## Agent Commands
-
-```bash
-# Run with config file
-./failover-agent --config validator-config.json
-
-# Run with flags
-./failover-agent --listen :8080 --rpc http://127.0.0.1:8899
-```
-
 ## Failover Process
 
 ### When Active Becomes Unhealthy
@@ -295,8 +251,6 @@ To safely shutdown the failover system:
    ```bash
    # Stop the manager service
    sudo systemctl stop failover-manager
-   # OR if running manually
-   Ctrl+C
    ```
 
 2. **Stop both agents simultaneously:**

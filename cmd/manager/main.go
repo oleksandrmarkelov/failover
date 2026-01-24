@@ -1503,8 +1503,15 @@ func main() {
 
 	// Handle shutdown-agent mode early (skip security checks)
 	if *shutdownAgent {
+		// If active/passive not explicitly set, use validator1/validator2 endpoints
+		if cfg.ActiveValidator == "" && cfg.Validator1.Endpoint != "" {
+			cfg.ActiveValidator = cfg.Validator1.Endpoint
+		}
+		if cfg.PassiveValidator == "" && cfg.Validator2.Endpoint != "" {
+			cfg.PassiveValidator = cfg.Validator2.Endpoint
+		}
 		if cfg.ActiveValidator == "" && cfg.PassiveValidator == "" {
-			log.Fatal("At least one validator endpoint (--active or --passive) is required for --shutdown-agent")
+			log.Fatal("At least one validator endpoint is required for --shutdown-agent")
 		}
 		log.Println("=== Sending shutdown commands to agents ===")
 		shutdownAgents(cfg)

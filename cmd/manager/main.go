@@ -993,6 +993,230 @@ func shutdownAgents(cfg *config.ManagerConfig) {
 	}
 }
 
+// extractPubkeyFromKeypair reads a Solana keypair JSON file and derives the public key
+func extractPubkeyFromKeypair(keypairPath string) (string, error) {
+	data, err := os.ReadFile(keypairPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read keypair file: %w", err)
+	}
+
+	// Solana keypair files are JSON arrays of 64 bytes (32 private + 32 public)
+	var keypairBytes []byte
+	if err := json.Unmarshal(data, &keypairBytes); err != nil {
+		return "", fmt.Errorf("failed to parse keypair JSON: %w", err)
+	}
+
+	if len(keypairBytes) != 64 {
+		return "", fmt.Errorf("invalid keypair length: expected 64 bytes, got %d", len(keypairBytes))
+	}
+
+	// Public key is the last 32 bytes
+	pubkeyBytes := keypairBytes[32:]
+
+	// Base58 encode the public key
+	pubkey := base58Encode(pubkeyBytes)
+	return pubkey, nil
+}
+
+// base58Encode encodes bytes to base58 (Bitcoin alphabet)
+func base58Encode(input []byte) string {
+	const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+
+	// Count leading zeros
+	leadingZeros := 0
+	for _, b := range input {
+		if b == 0 {
+			leadingZeros++
+		} else {
+			break
+		}
+	}
+
+	// Convert to big integer and encode
+	// Simple implementation for 32-byte public keys
+	size := len(input)*138/100 + 1
+	buf := make([]byte, size)
+
+	for _, b := range input {
+		carry := int(b)
+		for i := size - 1; i >= 0; i-- {
+			carry += 256 * int(buf[i])
+			buf[i] = byte(carry % 58)
+			carry /= 58
+		}
+	}
+
+	// Skip leading zeros in encoded output
+	start := 0
+	for start < size && buf[start] == 0 {
+		start++
+	}
+
+	// Build result with leading '1's for each leading zero byte
+	result := make([]byte, leadingZeros+size-start)
+	for i := 0; i < leadingZeros; i++ {
+		result[i] = '1'
+	}
+	for i := start; i < size; i++ {
+		result[leadingZeros+i-start] = alphabet[buf[i]]
+	}
+
+	return string(result)
+}
+
+// sshCheckExists checks if a file or directory exists on a remote host via SSH
+func sshCheckExists(sshKeyPath, sshUser, host, path string) error {
+	expandedKeyPath := expandSSHKeyPath(sshKeyPath)
+
+	cmd := exec.Command("ssh",
+		"-i", expandedKeyPath,
+		"-o", "ConnectTimeout=10",
+		"-o", "StrictHostKeyChecking=accept-new",
+		"-o", "BatchMode=yes",
+		fmt.Sprintf("%s@%s", sshUser, host),
+		fmt.Sprintf("test -e %s", path))
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("path does not exist or SSH failed: %w, output: %s", err, string(output))
+	}
+	return nil
+}
+
+// sshCheckExecutable checks if an executable exists on a remote host via SSH
+func sshCheckExecutable(sshKeyPath, sshUser, host, executablePath string) error {
+	expandedKeyPath := expandSSHKeyPath(sshKeyPath)
+
+	cmd := exec.Command("ssh",
+		"-i", expandedKeyPath,
+		"-o", "ConnectTimeout=10",
+		"-o", "StrictHostKeyChecking=accept-new",
+		"-o", "BatchMode=yes",
+		fmt.Sprintf("%s@%s", sshUser, host),
+		fmt.Sprintf("test -x %s", executablePath))
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("executable does not exist or is not executable: %w, output: %s", err, string(output))
+	}
+	return nil
+}
+
+// extractValidatorPath extracts the validator executable path from the SSH command template
+// Example: "agave-validator --ledger {ledger} set-identity" returns "agave-validator"
+// Example: "/home/solana/.local/share/solana/install/active_release/bin/agave-validator --ledger {ledger} set-identity"
+// returns "/home/solana/.local/share/solana/install/active_release/bin/agave-validator"
+func extractValidatorPath(cmdTemplate string) string {
+	parts := strings.Fields(cmdTemplate)
+	if len(parts) == 0 {
+		return ""
+	}
+	return parts[0]
+}
+
+// validateSecureModeConfig validates the secure mode configuration on startup
+// Returns nil if validation passes, or an error describing what failed
+func validateSecureModeConfig(cfg *config.ManagerConfig) error {
+	log.Println("========================================")
+	log.Println("=== Validating Secure Mode Configuration ===")
+	log.Println("========================================")
+
+	// 1. Validate identity_keypair_path exists
+	log.Printf("Validation 1/5: Checking identity keypair file exists at %s...", cfg.IdentityKeypairPath)
+	if cfg.IdentityKeypairPath == "" {
+		return fmt.Errorf("validation failed: identity_keypair_path is not configured")
+	}
+	if _, err := os.Stat(cfg.IdentityKeypairPath); os.IsNotExist(err) {
+		return fmt.Errorf("validation failed: identity keypair file does not exist at %s", cfg.IdentityKeypairPath)
+	}
+	log.Printf("  ✓ Identity keypair file exists")
+
+	// 2. Check if keypair matches staked_identity_pubkey
+	log.Printf("Validation 2/5: Checking identity keypair matches staked_identity_pubkey...")
+	if cfg.StakedIdentityPubkey == "" {
+		return fmt.Errorf("validation failed: staked_identity_pubkey is not configured (required in secure mode)")
+	}
+	derivedPubkey, err := extractPubkeyFromKeypair(cfg.IdentityKeypairPath)
+	if err != nil {
+		return fmt.Errorf("validation failed: could not extract pubkey from keypair: %w", err)
+	}
+	if derivedPubkey != cfg.StakedIdentityPubkey {
+		return fmt.Errorf("validation failed: keypair pubkey (%s) does not match staked_identity_pubkey (%s)",
+			derivedPubkey, cfg.StakedIdentityPubkey)
+	}
+	log.Printf("  ✓ Keypair pubkey matches staked_identity_pubkey (%s)", cfg.StakedIdentityPubkey)
+
+	// 3. Check if ssh_key_path exists
+	log.Printf("Validation 3/5: Checking SSH key file exists...")
+	if cfg.SSHKeyPath == "" {
+		return fmt.Errorf("validation failed: ssh_key_path is not configured")
+	}
+	expandedSSHKeyPath := expandSSHKeyPath(cfg.SSHKeyPath)
+	if _, err := os.Stat(expandedSSHKeyPath); os.IsNotExist(err) {
+		return fmt.Errorf("validation failed: SSH key file does not exist at %s (expanded from %s)",
+			expandedSSHKeyPath, cfg.SSHKeyPath)
+	}
+	log.Printf("  ✓ SSH key file exists at %s", expandedSSHKeyPath)
+
+	// 4. Check if manager can SSH to both validators and ledger folder exists
+	log.Printf("Validation 4/5: Checking SSH connectivity and ledger paths...")
+	if cfg.SSHUser == "" {
+		return fmt.Errorf("validation failed: ssh_user is not configured")
+	}
+
+	validators := []struct {
+		name     string
+		endpoint config.ValidatorEndpoint
+	}{
+		{"Validator1", cfg.Validator1},
+		{"Validator2", cfg.Validator2},
+	}
+
+	for _, v := range validators {
+		if v.endpoint.IP == "" {
+			return fmt.Errorf("validation failed: %s IP is not configured", v.name)
+		}
+		if v.endpoint.LedgerPath == "" {
+			return fmt.Errorf("validation failed: %s ledger_path is not configured", v.name)
+		}
+
+		log.Printf("  Checking SSH to %s (%s)...", v.name, v.endpoint.IP)
+		err := sshCheckExists(cfg.SSHKeyPath, cfg.SSHUser, v.endpoint.IP, v.endpoint.LedgerPath)
+		if err != nil {
+			return fmt.Errorf("validation failed: cannot SSH to %s (%s) or ledger path does not exist (%s): %w",
+				v.name, v.endpoint.IP, v.endpoint.LedgerPath, err)
+		}
+		log.Printf("  ✓ SSH to %s successful, ledger path exists: %s", v.name, v.endpoint.LedgerPath)
+	}
+
+	// 5. Check if agave-validator executable exists on both validators
+	log.Printf("Validation 5/5: Checking agave-validator executable exists on validators...")
+	cmdTemplate := cfg.SSHSetIdentityCommand
+	if cmdTemplate == "" {
+		cmdTemplate = "agave-validator --ledger {ledger} set-identity"
+	}
+	validatorExePath := extractValidatorPath(cmdTemplate)
+	if validatorExePath == "" {
+		return fmt.Errorf("validation failed: could not extract validator executable path from ssh_set_identity_command")
+	}
+
+	for _, v := range validators {
+		log.Printf("  Checking executable on %s (%s): %s...", v.name, v.endpoint.IP, validatorExePath)
+		err := sshCheckExecutable(cfg.SSHKeyPath, cfg.SSHUser, v.endpoint.IP, validatorExePath)
+		if err != nil {
+			return fmt.Errorf("validation failed: agave-validator executable not found on %s (%s) at path %s: %w",
+				v.name, v.endpoint.IP, validatorExePath, err)
+		}
+		log.Printf("  ✓ Executable found on %s: %s", v.name, validatorExePath)
+	}
+
+	log.Println("========================================")
+	log.Println("=== All Secure Mode Validations Passed ===")
+	log.Println("========================================")
+
+	return nil
+}
+
 // detectActiveFromGossip detects which validator is active by checking gossip
 // Returns activeEndpoint, passiveEndpoint, error
 func detectActiveFromGossip(cfg *config.ManagerConfig) (string, string, error) {
@@ -1202,6 +1426,13 @@ func main() {
 	}
 	if logCloser != nil {
 		defer logCloser.Close()
+	}
+
+	// Validate secure mode configuration if enabled
+	if cfg.SecureIdentityMode {
+		if err := validateSecureModeConfig(cfg); err != nil {
+			log.Fatalf("Secure mode validation failed: %v", err)
+		}
 	}
 
 	// Auto-detect active/passive from gossip if not explicitly set

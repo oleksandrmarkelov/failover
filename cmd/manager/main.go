@@ -1501,6 +1501,17 @@ func main() {
 		defer logCloser.Close()
 	}
 
+	// Handle shutdown-agent mode early (skip security checks)
+	if *shutdownAgent {
+		if cfg.ActiveValidator == "" && cfg.PassiveValidator == "" {
+			log.Fatal("At least one validator endpoint (--active or --passive) is required for --shutdown-agent")
+		}
+		log.Println("=== Sending shutdown commands to agents ===")
+		shutdownAgents(cfg)
+		log.Println("=== Shutdown commands sent ===")
+		return
+	}
+
 	// Validate secure mode configuration if enabled
 	if cfg.SecureIdentityMode {
 		if err := validateSecureModeConfig(cfg); err != nil {
@@ -1529,17 +1540,6 @@ func main() {
 		} else if cfg.ActiveValidator == "" || cfg.PassiveValidator == "" {
 			log.Fatal("Both active and passive validator endpoints are required. Either set active_validator/passive_validator or configure validator1, validator2, and gossip_check_command for auto-detection.")
 		}
-	}
-
-	// Handle shutdown-agent mode
-	if *shutdownAgent {
-		if cfg.ActiveValidator == "" && cfg.PassiveValidator == "" {
-			log.Fatal("At least one validator endpoint (--active or --passive) is required for --shutdown-agent")
-		}
-		log.Println("=== Sending shutdown commands to agents ===")
-		shutdownAgents(cfg)
-		log.Println("=== Shutdown commands sent ===")
-		return
 	}
 
 	manager := NewManager(cfg)

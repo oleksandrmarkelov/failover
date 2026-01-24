@@ -1114,6 +1114,36 @@ func extractValidatorPath(cmdTemplate string) string {
 	return parts[0]
 }
 
+// generateRandomString generates a random string for testing
+func generateRandomString(length int) string {
+	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	b := make([]byte, length)
+	for i := range b {
+		b[i] = charset[time.Now().UnixNano()%int64(len(charset))]
+		time.Sleep(time.Nanosecond) // Ensure different values
+	}
+	return string(b)
+}
+
+// sshExecuteCommand executes a command via SSH and returns the output
+func sshExecuteCommand(sshKeyPath, sshUser, host, command string) (string, error) {
+	expandedKeyPath := expandSSHKeyPath(sshKeyPath)
+
+	cmd := exec.Command("ssh",
+		"-i", expandedKeyPath,
+		"-o", "ConnectTimeout=10",
+		"-o", "StrictHostKeyChecking=accept-new",
+		"-o", "BatchMode=yes",
+		fmt.Sprintf("%s@%s", sshUser, host),
+		command)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("SSH command failed: %w, output: %s", err, string(output))
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
 // validateSecureModeConfig validates the secure mode configuration on startup
 // Returns nil if validation passes, or an error describing what failed
 func validateSecureModeConfig(cfg *config.ManagerConfig) error {
@@ -1122,7 +1152,7 @@ func validateSecureModeConfig(cfg *config.ManagerConfig) error {
 	log.Println("========================================")
 
 	// 1. Validate identity_keypair_path exists
-	log.Printf("Validation 1/5: Checking identity keypair file exists at %s...", cfg.IdentityKeypairPath)
+	log.Printf("Validation 1/6: Checking identity keypair file exists at %s...", cfg.IdentityKeypairPath)
 	if cfg.IdentityKeypairPath == "" {
 		return fmt.Errorf("validation failed: identity_keypair_path is not configured")
 	}
@@ -1132,7 +1162,7 @@ func validateSecureModeConfig(cfg *config.ManagerConfig) error {
 	log.Printf("  ✓ Identity keypair file exists")
 
 	// 2. Check if keypair matches staked_identity_pubkey
-	log.Printf("Validation 2/5: Checking identity keypair matches staked_identity_pubkey...")
+	log.Printf("Validation 2/6: Checking identity keypair matches staked_identity_pubkey...")
 	if cfg.StakedIdentityPubkey == "" {
 		return fmt.Errorf("validation failed: staked_identity_pubkey is not configured (required in secure mode)")
 	}
@@ -1147,7 +1177,7 @@ func validateSecureModeConfig(cfg *config.ManagerConfig) error {
 	log.Printf("  ✓ Keypair pubkey matches staked_identity_pubkey (%s)", cfg.StakedIdentityPubkey)
 
 	// 3. Check if ssh_key_path exists
-	log.Printf("Validation 3/5: Checking SSH key file exists...")
+	log.Printf("Validation 3/6: Checking SSH key file exists...")
 	if cfg.SSHKeyPath == "" {
 		return fmt.Errorf("validation failed: ssh_key_path is not configured")
 	}
@@ -1159,7 +1189,7 @@ func validateSecureModeConfig(cfg *config.ManagerConfig) error {
 	log.Printf("  ✓ SSH key file exists at %s", expandedSSHKeyPath)
 
 	// 4. Check if manager can SSH to both validators and ledger folder exists
-	log.Printf("Validation 4/5: Checking SSH connectivity and ledger paths...")
+	log.Printf("Validation 4/6: Checking SSH connectivity and ledger paths...")
 	if cfg.SSHUser == "" {
 		return fmt.Errorf("validation failed: ssh_user is not configured")
 	}
@@ -1190,7 +1220,7 @@ func validateSecureModeConfig(cfg *config.ManagerConfig) error {
 	}
 
 	// 5. Check if agave-validator executable exists on both validators
-	log.Printf("Validation 5/5: Checking agave-validator executable exists on validators...")
+	log.Printf("Validation 5/6: Checking agave-validator executable exists on validators...")
 	cmdTemplate := cfg.SSHSetIdentityCommand
 	if cmdTemplate == "" {
 		cmdTemplate = "agave-validator --ledger {ledger} set-identity"
@@ -1208,6 +1238,49 @@ func validateSecureModeConfig(cfg *config.ManagerConfig) error {
 				v.name, v.endpoint.IP, validatorExePath, err)
 		}
 		log.Printf("  ✓ Executable found on %s: %s", v.name, validatorExePath)
+	}
+
+	// 6. Check etcd connectivity between validators
+	log.Printf("Validation 6/6: Checking etcd connectivity between validators...")
+	testKey := "/failover/validation/test"
+	testValue := generateRandomString(16)
+	log.Printf("  Generated test value: %s", testValue)
+
+	// Write test value to etcd from Validator1
+	log.Printf("  Writing test value to etcd from %s (%s)...", validators[0].name, validators[0].endpoint.IP)
+	putCmd := fmt.Sprintf("etcdctl put %s %s", testKey, testValue)
+	_, err = sshExecuteCommand(cfg.SSHKeyPath, cfg.SSHUser, validators[0].endpoint.IP, putCmd)
+	if err != nil {
+		return fmt.Errorf("validation failed: could not write to etcd from %s (%s): %w",
+			validators[0].name, validators[0].endpoint.IP, err)
+	}
+	log.Printf("  ✓ Successfully wrote test value to etcd from %s", validators[0].name)
+
+	// Read test value from etcd on Validator2
+	log.Printf("  Reading test value from etcd on %s (%s)...", validators[1].name, validators[1].endpoint.IP)
+	getCmd := fmt.Sprintf("etcdctl get %s --print-value-only", testKey)
+	retrievedValue, err := sshExecuteCommand(cfg.SSHKeyPath, cfg.SSHUser, validators[1].endpoint.IP, getCmd)
+	if err != nil {
+		return fmt.Errorf("validation failed: could not read from etcd on %s (%s): %w",
+			validators[1].name, validators[1].endpoint.IP, err)
+	}
+
+	// Verify the values match
+	if retrievedValue != testValue {
+		return fmt.Errorf("validation failed: etcd value mismatch - wrote '%s' from %s, but read '%s' from %s",
+			testValue, validators[0].name, retrievedValue, validators[1].name)
+	}
+	log.Printf("  ✓ Successfully read matching value from etcd on %s", validators[1].name)
+
+	// Cleanup: delete the test key from Validator1
+	log.Printf("  Cleaning up test key from etcd...")
+	delCmd := fmt.Sprintf("etcdctl del %s", testKey)
+	_, err = sshExecuteCommand(cfg.SSHKeyPath, cfg.SSHUser, validators[0].endpoint.IP, delCmd)
+	if err != nil {
+		log.Printf("  Warning: could not delete test key from etcd: %v", err)
+		// Don't fail validation for cleanup issues
+	} else {
+		log.Printf("  ✓ Test key cleaned up")
 	}
 
 	log.Println("========================================")

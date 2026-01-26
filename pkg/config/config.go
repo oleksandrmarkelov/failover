@@ -123,6 +123,11 @@ type ValidatorConfig struct {
 	// ListenAddr address to listen on (e.g., ":8080")
 	ListenAddr string `json:"listen_addr"`
 
+	// AllowedIPs list of IP addresses allowed to access the agent API
+	// If empty, all IPs are allowed (no restriction)
+	// Example: ["192.168.1.100", "10.0.0.50"]
+	AllowedIPs []string `json:"allowed_ips"`
+
 	// LocalRPC local validator RPC endpoint (e.g., "http://127.0.0.1:8899")
 	LocalRPC string `json:"local_rpc"`
 

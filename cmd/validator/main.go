@@ -23,6 +23,32 @@ import (
 	"github.com/gagliardetto/solana-go/rpc"
 )
 
+// isIPAllowed checks if the given IP is in the allowed list
+// Returns true if allowed, false if denied
+// If allowedIPs is empty, all IPs are allowed
+func isIPAllowed(remoteAddr string, allowedIPs []string) bool {
+	// If no IPs configured, allow all
+	if len(allowedIPs) == 0 {
+		return true
+	}
+
+	// Extract IP from "IP:port" format
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		// If can't parse, try using the whole string as IP (might not have port)
+		host = remoteAddr
+	}
+
+	// Check if IP is in the allowed list
+	for _, allowedIP := range allowedIPs {
+		if host == allowedIP {
+			return true
+		}
+	}
+
+	return false
+}
+
 // getPublicIP detects the public IP of this server
 func getPublicIP() (string, error) {
 	// Try to get public IP by connecting to a public server
@@ -573,6 +599,13 @@ func (va *ValidatorAgent) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check IP allowlist
+	if !isIPAllowed(r.RemoteAddr, va.config.AllowedIPs) {
+		log.Printf("Unauthorized access attempt to /status from %s", r.RemoteAddr)
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
 	// Parse the request to get LastReceivedTimestamp (Echo/Ack mechanism)
 	var req api.ValidatorStatusRequest
 	if r.Method == http.MethodPost {
@@ -668,6 +701,13 @@ func (va *ValidatorAgent) handleFailover(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Check IP allowlist
+	if !isIPAllowed(r.RemoteAddr, va.config.AllowedIPs) {
+		log.Printf("Unauthorized access attempt to /failover from %s", r.RemoteAddr)
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
 	var cmd api.FailoverCommand
 	if err := json.NewDecoder(r.Body).Decode(&cmd); err != nil {
 		http.Error(w, "Invalid request body", http.StatusBadRequest)
@@ -708,6 +748,13 @@ func (va *ValidatorAgent) handleFailover(w http.ResponseWriter, r *http.Request)
 func (va *ValidatorAgent) handleShutdown(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Check IP allowlist
+	if !isIPAllowed(r.RemoteAddr, va.config.AllowedIPs) {
+		log.Printf("Unauthorized access attempt to /shutdown from %s", r.RemoteAddr)
+		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
 
@@ -754,6 +801,13 @@ func (va *ValidatorAgent) handleShutdown(w http.ResponseWriter, r *http.Request)
 func (va *ValidatorAgent) handleIdentity(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Check IP allowlist
+	if !isIPAllowed(r.RemoteAddr, va.config.AllowedIPs) {
+		log.Printf("Unauthorized access attempt to /identity from %s", r.RemoteAddr)
+		http.Error(w, "Forbidden", http.StatusForbidden)
 		return
 	}
 
@@ -912,6 +966,11 @@ func (va *ValidatorAgent) Start() error {
 	log.Printf("Process name: %s", va.config.ProcessName)
 	log.Printf("Is active on start: %v", va.isActive)
 	log.Printf("Dry-run mode: %v", va.config.DryRun)
+	if len(va.config.AllowedIPs) > 0 {
+		log.Printf("Allowed IPs: %v", va.config.AllowedIPs)
+	} else {
+		log.Printf("Allowed IPs: ALL (no restriction)")
+	}
 	log.Printf("================================")
 
 	return http.ListenAndServe(va.config.ListenAddr, nil)

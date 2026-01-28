@@ -1488,6 +1488,156 @@ func validateSecureModeConfig(cfg *config.ManagerConfig) error {
 	return nil
 }
 
+// validateVoteAccountConfig validates the vote account configuration on startup
+// Returns nil if validation passes, or an error describing what failed
+func validateVoteAccountConfig(cfg *config.ManagerConfig) error {
+	log.Println("========================================")
+	log.Println("=== Validating Vote Account Configuration ===")
+	log.Println("========================================")
+
+	if cfg.VoteAccountPubkey == "" {
+		log.Println("vote_account_pubkey not configured, skipping validation")
+		log.Println("WARNING: Without vote account verification, false failovers may occur")
+		log.Println("         when manager-to-validator connection is broken but validator is healthy")
+		log.Println("========================================")
+		return nil
+	}
+
+	log.Printf("Vote account pubkey: %s", cfg.VoteAccountPubkey)
+	log.Printf("Stale vote threshold: %d slots", cfg.StaleVoteSlotThreshold)
+	log.Printf("Cluster RPC: %s", cfg.ClusterRPC)
+
+	// Step 1: Fetch current network slot
+	log.Println("Step 1: Fetching current network slot from cluster RPC...")
+	clusterClient := rpc.New(cfg.ClusterRPC)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	networkSlot, err := clusterClient.GetSlot(ctx, rpc.CommitmentProcessed)
+	cancel()
+	if err != nil {
+		return fmt.Errorf("validation failed: could not fetch network slot from cluster RPC: %w", err)
+	}
+	log.Printf("  ✓ Network slot: %d", networkSlot)
+
+	// Step 2: Query vote accounts and find our vote account
+	log.Println("Step 2: Querying vote accounts from cluster RPC...")
+
+	type VoteAccount struct {
+		VotePubkey     string `json:"votePubkey"`
+		NodePubkey     string `json:"nodePubkey"`
+		ActivatedStake uint64 `json:"activatedStake"`
+		LastVote       uint64 `json:"lastVote"`
+	}
+
+	type GetVoteAccountsResult struct {
+		Current    []VoteAccount `json:"current"`
+		Delinquent []VoteAccount `json:"delinquent"`
+	}
+
+	reqBody := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "getVoteAccounts",
+		"params":  []interface{}{},
+	}
+
+	jsonBody, err := json.Marshal(reqBody)
+	if err != nil {
+		return fmt.Errorf("validation failed: could not marshal request: %w", err)
+	}
+
+	ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.ClusterRPC, bytes.NewBuffer(jsonBody))
+	if err != nil {
+		return fmt.Errorf("validation failed: could not create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("validation failed: could not query vote accounts from cluster RPC: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("validation failed: cluster RPC returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var rpcResp struct {
+		Result GetVoteAccountsResult `json:"result"`
+		Error  *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&rpcResp); err != nil {
+		return fmt.Errorf("validation failed: could not decode response: %w", err)
+	}
+
+	if rpcResp.Error != nil {
+		return fmt.Errorf("validation failed: RPC error %d: %s", rpcResp.Error.Code, rpcResp.Error.Message)
+	}
+
+	// Search for our vote account
+	var foundAccount *VoteAccount
+	var isDelinquent bool
+
+	for i := range rpcResp.Result.Current {
+		if rpcResp.Result.Current[i].VotePubkey == cfg.VoteAccountPubkey {
+			foundAccount = &rpcResp.Result.Current[i]
+			isDelinquent = false
+			break
+		}
+	}
+
+	if foundAccount == nil {
+		for i := range rpcResp.Result.Delinquent {
+			if rpcResp.Result.Delinquent[i].VotePubkey == cfg.VoteAccountPubkey {
+				foundAccount = &rpcResp.Result.Delinquent[i]
+				isDelinquent = true
+				break
+			}
+		}
+	}
+
+	if foundAccount == nil {
+		return fmt.Errorf("validation failed: vote account %s not found in current or delinquent vote accounts", cfg.VoteAccountPubkey)
+	}
+
+	log.Printf("  ✓ Vote account found")
+
+	// Step 3: Report vote account status
+	log.Println("Step 3: Checking vote account status...")
+	slotsBehind := int64(networkSlot) - int64(foundAccount.LastVote)
+
+	log.Printf("  Vote account: %s", foundAccount.VotePubkey)
+	log.Printf("  Node pubkey:  %s", foundAccount.NodePubkey)
+	log.Printf("  Last vote:    %d", foundAccount.LastVote)
+	log.Printf("  Network slot: %d", networkSlot)
+	log.Printf("  Slots behind: %d (threshold: %d)", slotsBehind, cfg.StaleVoteSlotThreshold)
+
+	if isDelinquent {
+		log.Printf("  Status: DELINQUENT")
+		log.Printf("  WARNING: Vote account is currently delinquent!")
+	} else if slotsBehind > cfg.StaleVoteSlotThreshold {
+		log.Printf("  Status: LAGGING")
+		log.Printf("  WARNING: Vote account is %d slots behind (threshold: %d)", slotsBehind, cfg.StaleVoteSlotThreshold)
+	} else {
+		log.Printf("  Status: HEALTHY")
+		log.Printf("  ✓ Vote account is actively voting")
+	}
+
+	log.Println("========================================")
+	log.Println("=== Vote Account Validation Passed ===")
+	log.Println("========================================")
+
+	return nil
+}
+
 // detectActiveFromGossip detects which validator is active by checking gossip
 // Returns activeEndpoint, passiveEndpoint, error
 func detectActiveFromGossip(cfg *config.ManagerConfig) (string, string, error) {
@@ -1722,6 +1872,11 @@ func main() {
 		if err := validateSecureModeConfig(cfg); err != nil {
 			log.Fatalf("Secure mode validation failed: %v", err)
 		}
+	}
+
+	// Validate vote account configuration
+	if err := validateVoteAccountConfig(cfg); err != nil {
+		log.Fatalf("Vote account validation failed: %v", err)
 	}
 
 	// Auto-detect active/passive from gossip if not explicitly set

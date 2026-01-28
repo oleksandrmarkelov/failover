@@ -382,11 +382,14 @@ func (m *Manager) checkVoteAccountStatus(ctx context.Context) (*VoteAccountStatu
 		return nil, fmt.Errorf("vote_account_pubkey not configured")
 	}
 
-	// Get current network slot for comparison
-	networkSlot, networkSlotTime := m.getNetworkSlot()
-	if networkSlot == 0 || time.Since(networkSlotTime) > 60*time.Second {
-		return nil, fmt.Errorf("network slot data unavailable or stale")
+	// Fetch fresh network slot directly from cluster RPC
+	// We don't use the cached slot because this method is only called during failover
+	// and we need the most accurate slot difference calculation
+	networkSlot, err := m.fetchNetworkSlot(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch fresh network slot: %w", err)
 	}
+	log.Printf("Vote account check: fetched fresh network slot: %d", networkSlot)
 
 	// Query getVoteAccounts from cluster RPC
 	// This returns both current and delinquent vote accounts

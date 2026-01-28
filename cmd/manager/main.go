@@ -367,6 +367,160 @@ func (m *Manager) calculateSlotDiff(validatorSlot uint64) int64 {
 	return int64(networkSlot) - int64(validatorSlot)
 }
 
+// VoteAccountStatus holds the result of checking vote account status
+type VoteAccountStatus struct {
+	IsVoting     bool   // true if vote account found and actively voting
+	LastVoteSlot uint64 // last vote slot from vote account
+	SlotsBehind  int64  // how many slots behind network slot
+	Error        string // error message if check failed
+}
+
+// checkVoteAccountStatus checks if the vote account is still actively voting via cluster RPC
+// This is used to verify the validator is actually down vs just unreachable from manager
+func (m *Manager) checkVoteAccountStatus(ctx context.Context) (*VoteAccountStatus, error) {
+	if m.config.VoteAccountPubkey == "" {
+		return nil, fmt.Errorf("vote_account_pubkey not configured")
+	}
+
+	// Get current network slot for comparison
+	networkSlot, networkSlotTime := m.getNetworkSlot()
+	if networkSlot == 0 || time.Since(networkSlotTime) > 60*time.Second {
+		return nil, fmt.Errorf("network slot data unavailable or stale")
+	}
+
+	// Query getVoteAccounts from cluster RPC
+	// This returns both current and delinquent vote accounts
+	type VoteAccount struct {
+		VotePubkey       string     `json:"votePubkey"`
+		NodePubkey       string     `json:"nodePubkey"`
+		ActivatedStake   uint64     `json:"activatedStake"`
+		Commission       uint8      `json:"commission"`
+		LastVote         uint64     `json:"lastVote"`
+		RootSlot         uint64     `json:"rootSlot"`
+		EpochVoteAccount bool       `json:"epochVoteAccount"`
+		EpochCredits     [][]uint64 `json:"epochCredits"`
+	}
+
+	type GetVoteAccountsResult struct {
+		Current    []VoteAccount `json:"current"`
+		Delinquent []VoteAccount `json:"delinquent"`
+	}
+
+	// Make RPC request
+	reqBody := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "getVoteAccounts",
+		"params":  []interface{}{},
+	}
+
+	jsonBody, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.config.ClusterRPC, bytes.NewBuffer(jsonBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := m.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("cluster RPC returned status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var rpcResp struct {
+		Result GetVoteAccountsResult `json:"result"`
+		Error  *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&rpcResp); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	if rpcResp.Error != nil {
+		return nil, fmt.Errorf("RPC error %d: %s", rpcResp.Error.Code, rpcResp.Error.Message)
+	}
+
+	// Search for our vote account in current (voting) accounts
+	targetVotePubkey := m.config.VoteAccountPubkey
+	for _, va := range rpcResp.Result.Current {
+		if va.VotePubkey == targetVotePubkey {
+			slotsBehind := int64(networkSlot) - int64(va.LastVote)
+			return &VoteAccountStatus{
+				IsVoting:     true,
+				LastVoteSlot: va.LastVote,
+				SlotsBehind:  slotsBehind,
+			}, nil
+		}
+	}
+
+	// Search in delinquent accounts
+	for _, va := range rpcResp.Result.Delinquent {
+		if va.VotePubkey == targetVotePubkey {
+			slotsBehind := int64(networkSlot) - int64(va.LastVote)
+			return &VoteAccountStatus{
+				IsVoting:     false, // In delinquent list
+				LastVoteSlot: va.LastVote,
+				SlotsBehind:  slotsBehind,
+			}, nil
+		}
+	}
+
+	// Vote account not found in either list
+	return &VoteAccountStatus{
+		IsVoting: false,
+		Error:    "vote account not found in current or delinquent lists",
+	}, nil
+}
+
+// isValidatorStillVoting checks if the validator is still actively voting on the network
+// Returns true if vote account's lastVote is within threshold of network slot
+// This is used to prevent false failovers when manager-to-validator connection is broken
+// but the validator itself is still operational
+func (m *Manager) isValidatorStillVoting(ctx context.Context) (bool, string) {
+	if m.config.VoteAccountPubkey == "" {
+		return false, "vote_account_pubkey not configured, cannot verify"
+	}
+
+	status, err := m.checkVoteAccountStatus(ctx)
+	if err != nil {
+		return false, fmt.Sprintf("failed to check vote account: %v", err)
+	}
+
+	if status.Error != "" {
+		return false, status.Error
+	}
+
+	threshold := m.config.StaleVoteSlotThreshold
+	if threshold == 0 {
+		threshold = 150 // Default ~1 minute
+	}
+
+	if status.IsVoting && status.SlotsBehind <= threshold {
+		return true, fmt.Sprintf("vote account is active (lastVote: %d, %d slots behind, threshold: %d)",
+			status.LastVoteSlot, status.SlotsBehind, threshold)
+	}
+
+	if status.IsVoting && status.SlotsBehind > threshold {
+		return false, fmt.Sprintf("vote account voting but stale (lastVote: %d, %d slots behind, threshold: %d)",
+			status.LastVoteSlot, status.SlotsBehind, threshold)
+	}
+
+	return false, fmt.Sprintf("vote account delinquent (lastVote: %d, %d slots behind)",
+		status.LastVoteSlot, status.SlotsBehind)
+}
+
 // isValidatorHealthy determines if a validator is healthy
 func (m *Manager) isValidatorHealthy(status *api.ValidatorStatusResponse) bool {
 	if status == nil {
@@ -816,6 +970,37 @@ func (m *Manager) checkAndFailover() {
 			return
 		}
 
+		// CONFIRM PHASE: Verify validator is actually not voting before failover
+		// This prevents false failovers when only manager-to-validator connection is broken
+		// but the validator itself is still operational and voting on the network
+		if m.config.VoteAccountPubkey != "" {
+			log.Printf("Verifying vote account status before failover...")
+			voteCtx, voteCancel := context.WithTimeout(m.ctx, 10*time.Second)
+			stillVoting, voteReason := m.isValidatorStillVoting(voteCtx)
+			voteCancel()
+
+			if stillVoting {
+				log.Printf("FAILOVER BLOCKED: Validator is still voting on the network!")
+				log.Printf("Vote account check: %s", voteReason)
+				log.Printf("This indicates manager-to-validator connection issue, not validator failure.")
+				m.notify(fmt.Sprintf("⚠️ <b>FAILOVER BLOCKED - VALIDATOR STILL VOTING</b>\n\n"+
+					"<b>Active:</b> %s (%s)\n"+
+					"<b>Trigger:</b> %s\n\n"+
+					"<b>Vote Account Check:</b>\n%s\n\n"+
+					"Validator is still actively voting on the network.\n"+
+					"This appears to be a manager-to-validator connection issue, not a validator failure.\n"+
+					"Failover will NOT proceed to prevent double-identity situation.",
+					activeState.Name, activeState.Endpoint, failoverReason, voteReason))
+				return
+			}
+
+			log.Printf("Vote account check confirmed: %s", voteReason)
+			log.Printf("Proceeding with failover...")
+		} else {
+			log.Printf("WARNING: vote_account_pubkey not configured, skipping vote verification")
+			log.Printf("Configure vote_account_pubkey to prevent false failovers from connectivity issues")
+		}
+
 		if err := m.performFailover(failoverReason); err != nil {
 			log.Printf("CRITICAL: Failover failed: %v", err)
 		}
@@ -863,10 +1048,21 @@ func (m *Manager) Monitor() error {
 	log.Printf("Misses before failover: %d", m.config.MissesBeforeFailover)
 	log.Printf("Slot diff threshold: %d", m.config.SlotDiffThreshold)
 	log.Printf("Dry-run mode: %v", m.config.DryRun)
+	if m.config.VoteAccountPubkey != "" {
+		log.Printf("Vote account verification: ENABLED")
+		log.Printf("Vote account pubkey: %s", m.config.VoteAccountPubkey)
+		log.Printf("Stale vote threshold: %d slots", m.config.StaleVoteSlotThreshold)
+	} else {
+		log.Printf("Vote account verification: DISABLED (vote_account_pubkey not configured)")
+	}
 	log.Printf("========================================")
 	log.Println()
 
 	// Send startup notification to Telegram
+	voteAccountInfo := "DISABLED"
+	if m.config.VoteAccountPubkey != "" {
+		voteAccountInfo = fmt.Sprintf("ENABLED (%d slot threshold)", m.config.StaleVoteSlotThreshold)
+	}
 	m.notify(fmt.Sprintf(`🚀 <b>FAILOVER MANAGER STARTED</b>
 
 🕐 %s
@@ -878,6 +1074,7 @@ func (m *Manager) Monitor() error {
 • Heartbeat: %v
 • Misses before failover: %d
 • Slot diff threshold: %d
+• Vote account verification: %s
 • Dry-run: %v`,
 		time.Now().Format("2006-01-02 15:04:05"),
 		m.validators[0].Name, m.validators[0].Endpoint,
@@ -885,6 +1082,7 @@ func (m *Manager) Monitor() error {
 		interval,
 		m.config.MissesBeforeFailover,
 		m.config.SlotDiffThreshold,
+		voteAccountInfo,
 		m.config.DryRun))
 
 	// Start network slot monitoring loop

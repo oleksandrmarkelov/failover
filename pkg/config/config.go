@@ -116,6 +116,20 @@ type ManagerConfig struct {
 	// by comparing with the identity reported by each agent
 	// Example: "DQx6XD5fWQ2Pbkg4Fi4gVzLbGg6c4ST7ZgXTawZZAXEY"
 	StakedIdentityPubkey string `json:"staked_identity_pubkey"`
+
+	// VoteAccountPubkey is the public key of the vote account associated with this validator
+	// Used to verify if the validator is still actively voting on the network before failover
+	// When manager loses connection to active validator, it checks if the vote account is still
+	// voting (recent lastVote slot) via cluster RPC before triggering failover
+	// This prevents false failovers when only manager-to-validator connection is broken
+	// Example: "8SQEcP4FaYQySktNQeyxF3w8pvArx3oMEh7fPrzkN9pu"
+	VoteAccountPubkey string `json:"vote_account_pubkey"`
+
+	// StaleVoteSlotThreshold is the maximum number of slots behind network slot
+	// that the vote account's lastVote can be before considering the validator as not voting
+	// If vote account's lastVote is within this threshold of network slot, failover is blocked
+	// Default: 150 slots (~1 minute at 400ms/slot)
+	StaleVoteSlotThreshold int64 `json:"stale_vote_slot_threshold"`
 }
 
 // ValidatorConfig is the configuration for the validator program
@@ -273,6 +287,9 @@ func LoadManagerConfig(path string) (*ManagerConfig, error) {
 	}
 	if config.StartupGracePeriod == 0 {
 		config.StartupGracePeriod = Duration(2 * time.Minute)
+	}
+	if config.StaleVoteSlotThreshold == 0 {
+		config.StaleVoteSlotThreshold = 150 // ~1 minute at 400ms/slot
 	}
 
 	return &config, nil

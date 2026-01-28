@@ -1764,8 +1764,10 @@ func main() {
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
 	go func() {
-		<-sigChan
-		log.Println("Received shutdown signal")
+		sig := <-sigChan
+		log.Printf("Received shutdown signal: %v", sig)
+		manager.notify(fmt.Sprintf("🛑 <b>FAILOVER MANAGER STOPPED</b>\n\n🕐 %s\n\nSignal: %v",
+			time.Now().Format("2006-01-02 15:04:05"), sig))
 		manager.Stop()
 	}()
 

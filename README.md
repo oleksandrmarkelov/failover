@@ -80,6 +80,7 @@ In secure mode the identity keypair is located only on the manager server. This 
 - Telegram notifications for critical events
 - Dry-run mode (test without actual failover)
 - Remote agent shutdown command (`--shutdown-agent`)
+- Manual failover trigger (`--trigger-failover`)
 
 ### Validator Agent Program
 - Auto-detects active state from gossip on startup
@@ -263,6 +264,13 @@ This ensures both validator agents are stopped at the same time, preventing eith
 
 **Note:** The `--shutdown-agent` command requires the manager binary but does not start the manager service. It only sends shutdown commands to the configured agent endpoints.
 
+## Manual Failover
+
+On manager box execute:
+```bash
+./failover-manager --trigger-failover --reason "manual failover triggered via CLI"
+```
+
 ## API Endpoints
 
 ### Validator Agent
@@ -297,4 +305,3 @@ The manager can send notifications to Telegram for critical events:
 ```
 
 For group chats, the chat ID is negative. For private chats, use your user ID.
-

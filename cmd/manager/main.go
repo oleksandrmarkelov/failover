@@ -1994,7 +1994,17 @@ func main() {
 	var err error
 
 	// Load config from file or use flags
-	if *configFile != "" {
+	if *triggerFailover {
+		// Handle trigger-failover mode (doesn't need config)
+		reason := *failoverReason
+		if reason == "" {
+			reason = "manual failover triggered via CLI"
+		}
+		if err := triggerManualFailover(reason); err != nil {
+			log.Fatalf("Failed to trigger failover: %v", err)
+		}
+		return
+	} else if *configFile != "" {
 		cfg, err = config.LoadManagerConfig(*configFile)
 		if err != nil {
 			log.Fatalf("Failed to load config: %v", err)
@@ -2065,18 +2075,6 @@ func main() {
 		log.Println("=== Sending shutdown commands to agents ===")
 		shutdownAgents(cfg)
 		log.Println("=== Shutdown commands sent ===")
-		return
-	}
-
-	// Handle trigger-failover mode (send request to running manager)
-	if *triggerFailover {
-		reason := *failoverReason
-		if reason == "" {
-			reason = "manual failover triggered via CLI"
-		}
-		if err := triggerManualFailover(reason); err != nil {
-			log.Fatalf("Failed to trigger failover: %v", err)
-		}
 		return
 	}
 

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -1094,6 +1095,9 @@ func (m *Manager) Monitor() error {
 	// Start status report loop (every 4 hours)
 	go m.statusReportLoop()
 
+	// Start API server for manual failover
+	m.startAPIServer()
+
 	// Initial check
 	m.checkAndFailover()
 
@@ -1111,6 +1115,162 @@ func (m *Manager) Monitor() error {
 // Stop stops the manager
 func (m *Manager) Stop() {
 	m.cancel()
+}
+
+// ManualFailoverRequest is the request body for manual failover API
+type ManualFailoverRequest struct {
+	Reason string `json:"reason"`
+}
+
+// ManualFailoverResponse is the response body for manual failover API
+type ManualFailoverResponse struct {
+	Success   bool   `json:"success"`
+	Message   string `json:"message"`
+	OldActive string `json:"old_active,omitempty"`
+	NewActive string `json:"new_active,omitempty"`
+}
+
+// isLocalhostRequest checks if the request comes from localhost
+func isLocalhostRequest(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		// If no port, just use the address as-is
+		host = r.RemoteAddr
+	}
+
+	// Check for localhost addresses
+	if host == "127.0.0.1" || host == "::1" || host == "localhost" {
+		return true
+	}
+
+	// Check if it's a loopback IP
+	ip := net.ParseIP(host)
+	if ip != nil && ip.IsLoopback() {
+		return true
+	}
+
+	return false
+}
+
+// handleManualFailover handles the manual failover API endpoint
+func (m *Manager) handleManualFailover(w http.ResponseWriter, r *http.Request) {
+	// Only accept POST requests
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Only accept requests from localhost
+	if !isLocalhostRequest(r) {
+		log.Printf("Manual failover rejected: request from non-localhost address %s", r.RemoteAddr)
+		http.Error(w, "Forbidden: only localhost requests are allowed", http.StatusForbidden)
+		return
+	}
+
+	// Parse request body
+	var req ManualFailoverRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if req.Reason == "" {
+		req.Reason = "manual failover triggered via API"
+	}
+
+	log.Printf("========================================")
+	log.Printf("=== MANUAL FAILOVER REQUESTED ===")
+	log.Printf("Reason: %s", req.Reason)
+	log.Printf("Requested from: %s", r.RemoteAddr)
+	log.Printf("========================================")
+
+	// Get current state
+	m.mu.RLock()
+	activeIdx := m.activeIdx
+	m.mu.RUnlock()
+
+	oldActive := m.validators[activeIdx]
+	newActive := m.validators[1-activeIdx]
+
+	// Check if passive validator is reachable and healthy
+	ctx, cancel := context.WithTimeout(m.ctx, m.config.RequestTimeout.Duration())
+	passiveStatus, err := m.checkValidator(ctx, newActive)
+	cancel()
+
+	if err != nil {
+		errMsg := fmt.Sprintf("Cannot failover: passive validator %s is unreachable: %v", newActive.Endpoint, err)
+		log.Printf("Manual failover rejected: %s", errMsg)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(ManualFailoverResponse{
+			Success: false,
+			Message: errMsg,
+		})
+		return
+	}
+
+	if !m.isValidatorHealthy(passiveStatus) {
+		reason := m.getUnhealthyReason(newActive, passiveStatus)
+		errMsg := fmt.Sprintf("Cannot failover: passive validator %s is not healthy: %s", newActive.Endpoint, reason)
+		log.Printf("Manual failover rejected: %s", errMsg)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(ManualFailoverResponse{
+			Success: false,
+			Message: errMsg,
+		})
+		return
+	}
+
+	// Perform failover (skip vote account check for manual failover)
+	if err := m.performFailover(req.Reason); err != nil {
+		errMsg := fmt.Sprintf("Failover failed: %v", err)
+		log.Printf("Manual failover failed: %s", errMsg)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(ManualFailoverResponse{
+			Success: false,
+			Message: errMsg,
+		})
+		return
+	}
+
+	successMsg := fmt.Sprintf("Failover completed successfully: %s -> %s", oldActive.Name, newActive.Name)
+	log.Printf("Manual failover succeeded: %s", successMsg)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(ManualFailoverResponse{
+		Success:   true,
+		Message:   successMsg,
+		OldActive: oldActive.Endpoint,
+		NewActive: newActive.Endpoint,
+	})
+}
+
+// startAPIServer starts the HTTP API server for manual failover
+func (m *Manager) startAPIServer() {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/failover", m.handleManualFailover)
+
+	server := &http.Server{
+		Addr:    "127.0.0.1:8081",
+		Handler: mux,
+	}
+
+	go func() {
+		log.Printf("Starting API server on 127.0.0.1:8081 (localhost only)")
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Printf("API server error: %v", err)
+		}
+	}()
+
+	// Shutdown server when context is cancelled
+	go func() {
+		<-m.ctx.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		server.Shutdown(ctx)
+	}()
 }
 
 // GetActiveValidator returns the currently active validator endpoint
@@ -1160,6 +1320,42 @@ func sendShutdownCommand(endpoint string, timeout time.Duration) error {
 	if !shutdownResp.Success {
 		return fmt.Errorf("agent failed to shutdown: %s", shutdownResp.Message)
 	}
+
+	return nil
+}
+
+// triggerManualFailover sends a failover request to the running manager's API
+func triggerManualFailover(reason string) error {
+	reqBody := ManualFailoverRequest{
+		Reason: reason,
+	}
+
+	jsonBody, err := json.Marshal(reqBody)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Post("http://127.0.0.1:8081/failover", "application/json", bytes.NewBuffer(jsonBody))
+	if err != nil {
+		return fmt.Errorf("failed to connect to manager API (is manager running?): %w", err)
+	}
+	defer resp.Body.Close()
+
+	var failoverResp ManualFailoverResponse
+	if err := json.NewDecoder(resp.Body).Decode(&failoverResp); err != nil {
+		return fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	if !failoverResp.Success {
+		return fmt.Errorf("%s", failoverResp.Message)
+	}
+
+	log.Println("=== MANUAL FAILOVER SUCCESSFUL ===")
+	log.Printf("Message: %s", failoverResp.Message)
+	log.Printf("Old active: %s", failoverResp.OldActive)
+	log.Printf("New active: %s", failoverResp.NewActive)
+	log.Println("==================================")
 
 	return nil
 }
@@ -1789,6 +1985,8 @@ func main() {
 	dryRun := flag.Bool("dry-run", true, "Dry-run mode (don't trigger failover)")
 	logFile := flag.String("log-file", "", "Path to log file (logs to both console and file)")
 	shutdownAgent := flag.Bool("shutdown-agent", false, "Send shutdown command to all agents and exit")
+	triggerFailover := flag.Bool("trigger-failover", false, "Trigger manual failover on running manager and exit")
+	failoverReason := flag.String("reason", "", "Reason for manual failover (used with --trigger-failover)")
 
 	flag.Parse()
 
@@ -1867,6 +2065,18 @@ func main() {
 		log.Println("=== Sending shutdown commands to agents ===")
 		shutdownAgents(cfg)
 		log.Println("=== Shutdown commands sent ===")
+		return
+	}
+
+	// Handle trigger-failover mode (send request to running manager)
+	if *triggerFailover {
+		reason := *failoverReason
+		if reason == "" {
+			reason = "manual failover triggered via CLI"
+		}
+		if err := triggerManualFailover(reason); err != nil {
+			log.Fatalf("Failed to trigger failover: %v", err)
+		}
 		return
 	}
 

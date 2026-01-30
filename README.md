@@ -114,9 +114,10 @@ Create `validator-config.json` on each server (replace IDENTITY, IP, LEDGER_PATH
 ```json
 {
   "listen_addr": ":8080",
+  "allowed_ips": ["MANAGER_IP"],
   "local_rpc": "http://127.0.0.1:8899",
   "process_name": "agave-validator",
-  "manager_timeout": "15s",
+  "manager_timeout": "30s",
   "tower_backup_command": "etcdctl put /solana/tower/active \"$(base64 -w0 LEDGER_PATH/tower-1_9-*.bin)\"",
   "tower_restore_command": "etcdctl get /solana/tower/active --print-value-only | base64 -d > LEDGER_PATH/tower-1_9-IDENTITY.bin",
   "identity_change_command": "SOLANA_PATH/agave-validator  -l LEDGER_PATH set-identity IDENTITY_PATH/testnet-validator-keypair.json",
@@ -156,15 +157,17 @@ Create `manager-config.json` for identity located on agent's server, example is 
   },
   "gossip_check_command": "solana -ut gossip | grep IDENTITY",
   "cluster_rpc": "https://api.testnet.solana.com",
-  "heartbeat_interval": "5s",
+  "heartbeat_interval": "10s",
   "misses_before_failover": 3,
   "slot_diff_threshold": 100,
-  "request_timeout": "5s",
+  "request_timeout": "8s",
   "dry_run": false,
   "telegram_bot_token": "BOT_TOKEN",
   "telegram_chat_id": "-CHAT_ID",
   "log_file": "/home/solana/failover/manager.log",
-  "staked_identity_pubkey": "IDENTITY"
+  "staked_identity_pubkey": "IDENTITY",
+  "vote_account_pubkey": "VOTE_ACCOUNT",
+  "stale_vote_slot_threshold": 75
 }
 ```
 

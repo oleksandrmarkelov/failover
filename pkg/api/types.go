@@ -118,6 +118,19 @@ type IdentityResponse struct {
 	Timestamp int64 `json:"timestamp"`
 }
 
+// ValidatorBinaryResponse is returned by agent to report the agave-validator binary path
+type ValidatorBinaryResponse struct {
+	// BinaryPath is the full path to the agave-validator binary
+	// Detected from ExecStart= line in the systemd service file
+	BinaryPath string `json:"binary_path"`
+
+	// Error contains any error message
+	Error string `json:"error,omitempty"`
+
+	// Timestamp when response was generated
+	Timestamp int64 `json:"timestamp"`
+}
+
 // HealthCheckInterval constants
 const (
 	DefaultHeartbeatInterval    = 5 * time.Second

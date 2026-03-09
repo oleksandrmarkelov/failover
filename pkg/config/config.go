@@ -215,6 +215,11 @@ type ValidatorConfig struct {
 	// Example: "curl -s {local_rpc} -X POST -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getIdentity\"}' | jq -r '.result.identity'"
 	IdentityCheckCommand string `json:"identity_check_command"`
 
+	// SolanaServicePath path to the systemd service file for the solana validator
+	// Used to auto-detect the full path to the agave-validator binary from the ExecStart= line
+	// Default: "/etc/systemd/system/solana.service"
+	SolanaServicePath string `json:"solana_service_path"`
+
 	// DryRun if true, don't execute commands, just log them
 	DryRun bool `json:"dry_run"`
 
@@ -319,6 +324,9 @@ func LoadValidatorConfig(path string) (*ValidatorConfig, error) {
 	}
 	if config.ManagerTimeout == 0 {
 		config.ManagerTimeout = Duration(30 * time.Second)
+	}
+	if config.SolanaServicePath == "" {
+		config.SolanaServicePath = "/etc/systemd/system/solana.service"
 	}
 
 	return &config, nil

@@ -63,6 +63,36 @@ func getPublicIP() (string, error) {
 	return localAddr.IP.String(), nil
 }
 
+// detectAgaveBinaryFromService reads a systemd service file and extracts the full
+// path to the agave-validator binary from the first non-commented ExecStart= line.
+func detectAgaveBinaryFromService(servicePath string) (string, error) {
+	data, err := os.ReadFile(servicePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read service file %s: %w", servicePath, err)
+	}
+
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "ExecStart=") {
+			value := strings.TrimSpace(strings.TrimPrefix(trimmed, "ExecStart="))
+			parts := strings.Fields(value)
+			if len(parts) == 0 {
+				return "", fmt.Errorf("ExecStart line is empty in %s", servicePath)
+			}
+			binaryPath := parts[0]
+			if !strings.HasSuffix(binaryPath, "agave-validator") {
+				return "", fmt.Errorf("ExecStart binary %q does not end with agave-validator in %s", binaryPath, servicePath)
+			}
+			return binaryPath, nil
+		}
+	}
+
+	return "", fmt.Errorf("no ExecStart line found in %s", servicePath)
+}
+
 // ValidatorAgent handles health check requests and manages failover
 type ValidatorAgent struct {
 	config *config.ValidatorConfig
@@ -81,6 +111,10 @@ type ValidatorAgent struct {
 	lastSentTimestamp  int64 // Timestamp we included in our last response
 	lastAckedTimestamp int64 // Last timestamp the manager confirmed receiving
 
+	// agave-validator binary path (detected from systemd service file)
+	agaveBinaryMu   sync.RWMutex
+	agaveBinaryPath string
+
 	// HTTP client for peer communication
 	httpClient *http.Client
 
@@ -90,9 +124,22 @@ type ValidatorAgent struct {
 }
 
 // NewValidatorAgent creates a new validator agent
-func NewValidatorAgent(cfg *config.ValidatorConfig) *ValidatorAgent {
+func NewValidatorAgent(cfg *config.ValidatorConfig) (*ValidatorAgent, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	now := time.Now()
+
+	// Detect agave-validator binary path from systemd service file.
+	// This is required; fail hard if we cannot determine it.
+	servicePath := cfg.SolanaServicePath
+	if servicePath == "" {
+		servicePath = "/etc/systemd/system/solana.service"
+	}
+	binaryPath, err := detectAgaveBinaryFromService(servicePath)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to detect agave-validator binary path from %s: %w", servicePath, err)
+	}
+	log.Printf("agave-validator binary path detected from %s: %s", servicePath, binaryPath)
 
 	agent := &ValidatorAgent{
 		config:          cfg,
@@ -100,6 +147,7 @@ func NewValidatorAgent(cfg *config.ValidatorConfig) *ValidatorAgent {
 		lastManagerPing: time.Time{}, // Zero time - indicates never received ping
 		startTime:       now,
 		hasSeenManager:  false,
+		agaveBinaryPath: binaryPath,
 		httpClient: &http.Client{
 			Timeout: 5 * time.Second,
 		},
@@ -136,7 +184,7 @@ func NewValidatorAgent(cfg *config.ValidatorConfig) *ValidatorAgent {
 		agent.ensurePassiveIdentity()
 	}
 
-	return agent
+	return agent, nil
 }
 
 // ensurePassiveIdentity updates symlink and identity to passive state on startup
@@ -340,6 +388,13 @@ func (va *ValidatorAgent) checkHealth(ctx context.Context) bool {
 func (va *ValidatorAgent) executeCommand(command string, dryRun bool) (string, error) {
 	if command == "" {
 		return "", fmt.Errorf("command is empty")
+	}
+
+	// Resolve {agave_validator} placeholder with the detected binary path
+	if strings.Contains(command, "{agave_validator}") {
+		va.agaveBinaryMu.RLock()
+		command = strings.ReplaceAll(command, "{agave_validator}", va.agaveBinaryPath)
+		va.agaveBinaryMu.RUnlock()
 	}
 
 	if dryRun || va.config.DryRun {
@@ -948,6 +1003,71 @@ func (va *ValidatorAgent) managerWatchLoop() {
 	}
 }
 
+// refreshAgaveBinaryPath re-reads the systemd service file to update the binary path.
+func (va *ValidatorAgent) refreshAgaveBinaryPath() {
+	servicePath := va.config.SolanaServicePath
+	if servicePath == "" {
+		servicePath = "/etc/systemd/system/solana.service"
+	}
+	path, err := detectAgaveBinaryFromService(servicePath)
+	if err != nil {
+		log.Printf("WARNING: Failed to refresh agave-validator binary path from %s: %v", servicePath, err)
+		return
+	}
+	va.agaveBinaryMu.Lock()
+	old := va.agaveBinaryPath
+	va.agaveBinaryPath = path
+	va.agaveBinaryMu.Unlock()
+	if old != path {
+		log.Printf("agave-validator binary path updated: %s -> %s", old, path)
+	} else {
+		log.Printf("agave-validator binary path refresh: unchanged (%s)", path)
+	}
+}
+
+// agaveBinaryUpdateLoop refreshes the binary path once a day at approximately 22:00 local time.
+func (va *ValidatorAgent) agaveBinaryUpdateLoop() {
+	for {
+		now := time.Now()
+		next := time.Date(now.Year(), now.Month(), now.Day(), 22, 0, 0, 0, now.Location())
+		if !now.Before(next) {
+			next = next.Add(24 * time.Hour)
+		}
+		log.Printf("Next agave-validator binary path refresh scheduled at %s", next.Format(time.RFC3339))
+		select {
+		case <-va.ctx.Done():
+			return
+		case <-time.After(time.Until(next)):
+			log.Printf("Running scheduled agave-validator binary path refresh...")
+			va.refreshAgaveBinaryPath()
+		}
+	}
+}
+
+// handleAgaveBinary returns the full path to the agave-validator binary
+func (va *ValidatorAgent) handleAgaveBinary(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if !isIPAllowed(r.RemoteAddr, va.config.AllowedIPs) {
+		log.Printf("Unauthorized access attempt to /agave-binary from %s", r.RemoteAddr)
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	va.agaveBinaryMu.RLock()
+	path := va.agaveBinaryPath
+	va.agaveBinaryMu.RUnlock()
+
+	response := api.ValidatorBinaryResponse{
+		BinaryPath: path,
+		Timestamp:  time.Now().Unix(),
+	}
+	va.sendJSON(w, response)
+}
+
 // Start starts the HTTP server and background loops
 func (va *ValidatorAgent) Start() error {
 	// Register HTTP handlers
@@ -955,10 +1075,12 @@ func (va *ValidatorAgent) Start() error {
 	http.HandleFunc("/failover", va.handleFailover)
 	http.HandleFunc("/shutdown", va.handleShutdown)
 	http.HandleFunc("/identity", va.handleIdentity)
+	http.HandleFunc("/agave-binary", va.handleAgaveBinary)
 
 	// Start background loop for manager watch
 	// Note: Tower backup is now done on each status request from manager
 	go va.managerWatchLoop()
+	go va.agaveBinaryUpdateLoop()
 
 	log.Printf("=== Validator Agent Starting ===")
 	log.Printf("Listen address: %s", va.config.ListenAddr)
@@ -1045,7 +1167,10 @@ func main() {
 		defer logCloser.Close()
 	}
 
-	agent := NewValidatorAgent(cfg)
+	agent, err := NewValidatorAgent(cfg)
+	if err != nil {
+		log.Fatalf("Failed to create agent: %v", err)
+	}
 
 	// Handle graceful shutdown
 	sigChan := make(chan os.Signal, 1)

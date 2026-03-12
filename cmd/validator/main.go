@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -300,11 +301,17 @@ func (va *ValidatorAgent) isProcessHealthy() (running bool, uptime int64, health
 	return running, uptime, healthy
 }
 
-// getGossipCheckCommand returns the gossip check command with validator_identity substituted
+// getGossipCheckCommand returns the gossip check command with placeholders substituted
 func (va *ValidatorAgent) getGossipCheckCommand() string {
 	cmd := va.config.GossipCheckCommand
 	if va.config.ValidatorIdentity != "" {
 		cmd = strings.ReplaceAll(cmd, "{validator_identity}", va.config.ValidatorIdentity)
+	}
+	if strings.Contains(cmd, "{solana}") {
+		va.agaveBinaryMu.RLock()
+		solanaPath := filepath.Join(filepath.Dir(va.agaveBinaryPath), "solana")
+		va.agaveBinaryMu.RUnlock()
+		cmd = strings.ReplaceAll(cmd, "{solana}", solanaPath)
 	}
 	return cmd
 }
@@ -390,10 +397,11 @@ func (va *ValidatorAgent) executeCommand(command string, dryRun bool) (string, e
 		return "", fmt.Errorf("command is empty")
 	}
 
-	// Resolve {agave_validator} placeholder with the detected binary path
-	if strings.Contains(command, "{agave_validator}") {
+	// Resolve {agave_validator} and {solana} placeholders with the detected binary path
+	if strings.Contains(command, "{agave_validator}") || strings.Contains(command, "{solana}") {
 		va.agaveBinaryMu.RLock()
 		command = strings.ReplaceAll(command, "{agave_validator}", va.agaveBinaryPath)
+		command = strings.ReplaceAll(command, "{solana}", filepath.Join(filepath.Dir(va.agaveBinaryPath), "solana"))
 		va.agaveBinaryMu.RUnlock()
 	}
 

@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -2016,7 +2017,33 @@ func detectActiveFromGossip(cfg *config.ManagerConfig) (string, string, error) {
 		return "", "", fmt.Errorf("validator2 endpoint and ip not configured")
 	}
 
-	cmd := exec.Command("bash", "-c", cfg.GossipCheckCommand)
+	gossipCmd := cfg.GossipCheckCommand
+	if strings.Contains(gossipCmd, "{solana}") {
+		timeout := cfg.RequestTimeout.Duration()
+		if timeout == 0 {
+			timeout = 5 * time.Second
+		}
+		var solanaBinary string
+		var lastErr error
+		for _, endpoint := range []string{cfg.Validator1.Endpoint, cfg.Validator2.Endpoint} {
+			if endpoint == "" {
+				continue
+			}
+			agavePath, err := getAgentBinaryPath(endpoint, timeout)
+			if err != nil {
+				lastErr = fmt.Errorf("failed to fetch binary path from %s: %w", endpoint, err)
+				continue
+			}
+			solanaBinary = filepath.Join(filepath.Dir(agavePath), "solana")
+			break
+		}
+		if solanaBinary == "" {
+			return "", "", fmt.Errorf("cannot resolve {solana} in gossip_check_command: %w", lastErr)
+		}
+		gossipCmd = strings.ReplaceAll(gossipCmd, "{solana}", solanaBinary)
+	}
+
+	cmd := exec.Command("bash", "-c", gossipCmd)
 	output, err := cmd.Output()
 	if err != nil {
 		// grep returns exit code 1 if no match found

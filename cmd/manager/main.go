@@ -95,6 +95,10 @@ type Manager struct {
 	httpClient         *http.Client // For status checks (short timeout)
 	failoverHttpClient *http.Client // For failover commands (longer timeout)
 
+	// agave-validator binary paths fetched from agents (maps agent endpoint → binary path)
+	agaveBinaryPaths   map[string]string
+	agaveBinaryPathsMu sync.RWMutex
+
 	// Shutdown
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -109,9 +113,10 @@ func NewManager(cfg *config.ManagerConfig) *Manager {
 			{Name: "primary", Endpoint: cfg.ActiveValidator, IsReachable: true},
 			{Name: "secondary", Endpoint: cfg.PassiveValidator, IsReachable: true},
 		},
-		activeIdx:     0,
-		startTime:     time.Now(),
-		clusterClient: rpc.New(cfg.ClusterRPC),
+		activeIdx:        0,
+		startTime:        time.Now(),
+		clusterClient:    rpc.New(cfg.ClusterRPC),
+		agaveBinaryPaths: make(map[string]string),
 		httpClient: &http.Client{
 			Timeout: cfg.RequestTimeout.Duration(),
 		},
@@ -602,6 +607,152 @@ func (m *Manager) getValidatorEndpointConfig(endpoint string) *config.ValidatorE
 	return nil
 }
 
+// getAgentBinaryPath fetches the agave-validator binary path from an agent's /agave-binary endpoint
+func getAgentBinaryPath(endpoint string, timeout time.Duration) (string, error) {
+	client := &http.Client{Timeout: timeout}
+	resp, err := client.Get(endpoint + "/agave-binary")
+	if err != nil {
+		return "", fmt.Errorf("failed to connect: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var binResp api.ValidatorBinaryResponse
+	if err := json.NewDecoder(resp.Body).Decode(&binResp); err != nil {
+		return "", fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	if binResp.Error != "" {
+		return "", fmt.Errorf("agent error: %s", binResp.Error)
+	}
+
+	if binResp.BinaryPath == "" {
+		return "", fmt.Errorf("agent returned empty binary path")
+	}
+
+	return binResp.BinaryPath, nil
+}
+
+// resolveAgaveBinaryForHost returns the agave-validator binary path for a given host IP.
+// Falls back to "agave-validator" if not known.
+func (m *Manager) resolveAgaveBinaryForHost(hostIP string) string {
+	var endpoint string
+	if m.config.Validator1.IP == hostIP {
+		endpoint = m.config.Validator1.Endpoint
+	} else if m.config.Validator2.IP == hostIP {
+		endpoint = m.config.Validator2.Endpoint
+	}
+	if endpoint == "" {
+		return "agave-validator"
+	}
+	m.agaveBinaryPathsMu.RLock()
+	path := m.agaveBinaryPaths[endpoint]
+	m.agaveBinaryPathsMu.RUnlock()
+	if path == "" {
+		return "agave-validator"
+	}
+	return path
+}
+
+// fetchAndStoreBinaryPath fetches the binary path from a single agent endpoint and stores it.
+// Returns (newPath, oldPath, changed, error).
+func (m *Manager) fetchAndStoreBinaryPath(endpoint string, timeout time.Duration) (newPath, oldPath string, changed bool, err error) {
+	newPath, err = getAgentBinaryPath(endpoint, timeout)
+	if err != nil {
+		return "", "", false, err
+	}
+	m.agaveBinaryPathsMu.Lock()
+	oldPath = m.agaveBinaryPaths[endpoint]
+	m.agaveBinaryPaths[endpoint] = newPath
+	m.agaveBinaryPathsMu.Unlock()
+	changed = oldPath != "" && oldPath != newPath
+	return newPath, oldPath, changed, nil
+}
+
+// fetchAgaveBinaryPathsOnStartup fetches binary paths from all configured agent endpoints.
+// Returns an error if any configured endpoint fails — used on startup to prevent manager
+// from running with an unknown binary path.
+func (m *Manager) fetchAgaveBinaryPathsOnStartup() error {
+	timeout := m.config.RequestTimeout.Duration()
+	if timeout == 0 {
+		timeout = 5 * time.Second
+	}
+
+	endpoints := []struct {
+		name     string
+		endpoint string
+	}{
+		{"validator1", m.config.Validator1.Endpoint},
+		{"validator2", m.config.Validator2.Endpoint},
+	}
+
+	for _, v := range endpoints {
+		if v.endpoint == "" {
+			continue
+		}
+		newPath, _, _, err := m.fetchAndStoreBinaryPath(v.endpoint, timeout)
+		if err != nil {
+			return fmt.Errorf("failed to fetch agave-validator binary path from %s (%s): %w", v.name, v.endpoint, err)
+		}
+		log.Printf("agave-validator binary path for %s (%s): %s", v.name, v.endpoint, newPath)
+	}
+	return nil
+}
+
+// refreshAgaveBinaryPaths fetches binary paths from all known agent endpoints.
+// Logs warnings on failure and sends a Telegram notification for any changed path.
+// Used for the scheduled daily refresh (non-fatal).
+func (m *Manager) refreshAgaveBinaryPaths() {
+	timeout := m.config.RequestTimeout.Duration()
+	if timeout == 0 {
+		timeout = 5 * time.Second
+	}
+
+	endpoints := []struct {
+		name     string
+		endpoint string
+	}{
+		{"validator1", m.config.Validator1.Endpoint},
+		{"validator2", m.config.Validator2.Endpoint},
+	}
+
+	for _, v := range endpoints {
+		if v.endpoint == "" {
+			continue
+		}
+		newPath, oldPath, changed, err := m.fetchAndStoreBinaryPath(v.endpoint, timeout)
+		if err != nil {
+			log.Printf("WARNING: Failed to fetch agave-validator binary path from %s (%s): %v", v.name, v.endpoint, err)
+			continue
+		}
+		if changed {
+			log.Printf("agave-validator binary path CHANGED on %s (%s): %s -> %s", v.name, v.endpoint, oldPath, newPath)
+			m.notify(fmt.Sprintf("⚠️ <b>agave-validator binary path changed</b>\n\n🔧 Validator: %s\n📍 Endpoint: %s\n\n<b>Old:</b> <code>%s</code>\n<b>New:</b> <code>%s</code>\n\n🕐 %s",
+				v.name, v.endpoint, oldPath, newPath, time.Now().Format("2006-01-02 15:04:05")))
+		} else {
+			log.Printf("agave-validator binary path for %s (%s): %s", v.name, v.endpoint, newPath)
+		}
+	}
+}
+
+// agaveBinaryRefreshLoop refreshes binary paths from agents once a day at approximately 23:00 local time.
+func (m *Manager) agaveBinaryRefreshLoop() {
+	for {
+		now := time.Now()
+		next := time.Date(now.Year(), now.Month(), now.Day(), 23, 0, 0, 0, now.Location())
+		if !now.Before(next) {
+			next = next.Add(24 * time.Hour)
+		}
+		log.Printf("Next agave-validator binary path refresh scheduled at %s", next.Format(time.RFC3339))
+		select {
+		case <-m.ctx.Done():
+			return
+		case <-time.After(time.Until(next)):
+			log.Printf("Running scheduled agave-validator binary path refresh...")
+			m.refreshAgaveBinaryPaths()
+		}
+	}
+}
+
 // expandSSHKeyPath expands ~ to home directory in SSH key path
 func expandSSHKeyPath(path string) string {
 	if strings.HasPrefix(path, "~/") {
@@ -645,9 +796,10 @@ func (m *Manager) sshExecuteWithIdentity(host, remoteCmd string) error {
 func (m *Manager) sshSetIdentity(host, ledgerPath string) error {
 	cmdTemplate := m.config.SSHSetIdentityCommand
 	if cmdTemplate == "" {
-		cmdTemplate = "agave-validator --ledger {ledger} set-identity"
+		cmdTemplate = "{agave_validator} --ledger {ledger} set-identity"
 	}
 	remoteCmd := strings.ReplaceAll(cmdTemplate, "{ledger}", ledgerPath)
+	remoteCmd = strings.ReplaceAll(remoteCmd, "{agave_validator}", m.resolveAgaveBinaryForHost(host))
 	return m.sshExecuteWithIdentity(host, remoteCmd)
 }
 
@@ -655,9 +807,10 @@ func (m *Manager) sshSetIdentity(host, ledgerPath string) error {
 func (m *Manager) sshAddAuthorizedVoter(host, ledgerPath string) error {
 	cmdTemplate := m.config.SSHAuthorizedVoterCommand
 	if cmdTemplate == "" {
-		cmdTemplate = "agave-validator --ledger {ledger} authorized-voter add"
+		cmdTemplate = "{agave_validator} --ledger {ledger} authorized-voter add"
 	}
 	remoteCmd := strings.ReplaceAll(cmdTemplate, "{ledger}", ledgerPath)
+	remoteCmd = strings.ReplaceAll(remoteCmd, "{agave_validator}", m.resolveAgaveBinaryForHost(host))
 	return m.sshExecuteWithIdentity(host, remoteCmd)
 }
 
@@ -1089,11 +1242,20 @@ func (m *Manager) Monitor() error {
 		voteAccountInfo,
 		m.config.DryRun))
 
+	// Fetch agave-validator binary paths from agents on startup (fatal if any agent unreachable)
+	log.Printf("Fetching agave-validator binary paths from agents...")
+	if err := m.fetchAgaveBinaryPathsOnStartup(); err != nil {
+		return fmt.Errorf("startup failed: %w", err)
+	}
+
 	// Start network slot monitoring loop
 	go m.networkSlotLoop()
 
 	// Start status report loop (every 4 hours)
 	go m.statusReportLoop()
+
+	// Start daily binary path refresh loop (~23:00 local time)
+	go m.agaveBinaryRefreshLoop()
 
 	// Start API server for manual failover
 	m.startAPIServer()
@@ -1620,21 +1782,25 @@ func validateSecureModeConfig(cfg *config.ManagerConfig) error {
 	log.Printf("Validation 5/6: Checking agave-validator executable exists on validators...")
 	cmdTemplate := cfg.SSHSetIdentityCommand
 	if cmdTemplate == "" {
-		cmdTemplate = "agave-validator --ledger {ledger} set-identity"
+		cmdTemplate = "{agave_validator} --ledger {ledger} set-identity"
 	}
-	validatorExePath := extractValidatorPath(cmdTemplate)
-	if validatorExePath == "" {
-		return fmt.Errorf("validation failed: could not extract validator executable path from ssh_set_identity_command")
-	}
-
-	for _, v := range validators {
-		log.Printf("  Checking executable on %s (%s): %s...", v.name, v.endpoint.IP, validatorExePath)
-		err := sshCheckExecutable(cfg.SSHKeyPath, cfg.SSHUser, v.endpoint.IP, validatorExePath)
-		if err != nil {
-			return fmt.Errorf("validation failed: agave-validator executable not found on %s (%s) at path %s: %w",
-				v.name, v.endpoint.IP, validatorExePath, err)
+	if strings.Contains(cmdTemplate, "{agave_validator}") {
+		// Binary path will be fetched from each agent at runtime; skip static check
+		log.Printf("  ✓ ssh_set_identity_command uses {agave_validator} placeholder — binary path will be fetched from agents at startup")
+	} else {
+		validatorExePath := extractValidatorPath(cmdTemplate)
+		if validatorExePath == "" {
+			return fmt.Errorf("validation failed: could not extract validator executable path from ssh_set_identity_command")
 		}
-		log.Printf("  ✓ Executable found on %s: %s", v.name, validatorExePath)
+		for _, v := range validators {
+			log.Printf("  Checking executable on %s (%s): %s...", v.name, v.endpoint.IP, validatorExePath)
+			err := sshCheckExecutable(cfg.SSHKeyPath, cfg.SSHUser, v.endpoint.IP, validatorExePath)
+			if err != nil {
+				return fmt.Errorf("validation failed: agave-validator executable not found on %s (%s) at path %s: %w",
+					v.name, v.endpoint.IP, validatorExePath, err)
+			}
+			log.Printf("  ✓ Executable found on %s: %s", v.name, validatorExePath)
+		}
 	}
 
 	// 6. Check etcd connectivity between validators

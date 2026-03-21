@@ -130,6 +130,12 @@ type ManagerConfig struct {
 	// If vote account's lastVote is within this threshold of network slot, failover is blocked
 	// Default: 150 slots (~1 minute at 400ms/slot)
 	StaleVoteSlotThreshold int64 `json:"stale_vote_slot_threshold"`
+
+	// SolanaServicePath is the path to the local systemd service file used to detect the
+	// solana binary path for {solana} substitution in gossip_check_command.
+	// Required when gossip_check_command contains {solana}.
+	// Example: "/etc/systemd/system/solana.service"
+	SolanaServicePath string `json:"solana_service_path"`
 }
 
 // ValidatorConfig is the configuration for the validator program

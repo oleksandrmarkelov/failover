@@ -608,6 +608,34 @@ func (m *Manager) getValidatorEndpointConfig(endpoint string) *config.ValidatorE
 	return nil
 }
 
+// detectAgaveBinaryFromService reads a systemd service file and extracts the full
+// path to the agave-validator binary from the first non-commented ExecStart= line.
+func detectAgaveBinaryFromService(servicePath string) (string, error) {
+	data, err := os.ReadFile(servicePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read service file %s: %w", servicePath, err)
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "ExecStart=") {
+			value := strings.TrimSpace(strings.TrimPrefix(trimmed, "ExecStart="))
+			parts := strings.Fields(value)
+			if len(parts) == 0 {
+				return "", fmt.Errorf("ExecStart line is empty in %s", servicePath)
+			}
+			binaryPath := parts[0]
+			if !strings.HasSuffix(binaryPath, "agave-validator") {
+				return "", fmt.Errorf("ExecStart binary %q does not end with agave-validator in %s", binaryPath, servicePath)
+			}
+			return binaryPath, nil
+		}
+	}
+	return "", fmt.Errorf("no ExecStart line found in %s", servicePath)
+}
+
 // getAgentBinaryPath fetches the agave-validator binary path from an agent's /agave-binary endpoint
 func getAgentBinaryPath(endpoint string, timeout time.Duration) (string, error) {
 	client := &http.Client{Timeout: timeout}
@@ -2019,27 +2047,15 @@ func detectActiveFromGossip(cfg *config.ManagerConfig) (string, string, error) {
 
 	gossipCmd := cfg.GossipCheckCommand
 	if strings.Contains(gossipCmd, "{solana}") {
-		timeout := cfg.RequestTimeout.Duration()
-		if timeout == 0 {
-			timeout = 5 * time.Second
+		servicePath := cfg.SolanaServicePath
+		if servicePath == "" {
+			servicePath = "/etc/systemd/system/solana.service"
 		}
-		var solanaBinary string
-		var lastErr error
-		for _, endpoint := range []string{cfg.Validator1.Endpoint, cfg.Validator2.Endpoint} {
-			if endpoint == "" {
-				continue
-			}
-			agavePath, err := getAgentBinaryPath(endpoint, timeout)
-			if err != nil {
-				lastErr = fmt.Errorf("failed to fetch binary path from %s: %w", endpoint, err)
-				continue
-			}
-			solanaBinary = filepath.Join(filepath.Dir(agavePath), "solana")
-			break
+		agavePath, err := detectAgaveBinaryFromService(servicePath)
+		if err != nil {
+			return "", "", fmt.Errorf("cannot resolve {solana} in gossip_check_command: %w", err)
 		}
-		if solanaBinary == "" {
-			return "", "", fmt.Errorf("cannot resolve {solana} in gossip_check_command: %w", lastErr)
-		}
+		solanaBinary := filepath.Join(filepath.Dir(agavePath), "solana")
 		gossipCmd = strings.ReplaceAll(gossipCmd, "{solana}", solanaBinary)
 	}
 

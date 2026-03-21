@@ -10,7 +10,7 @@
   "identity_remove_command": "{agave_validator} --ledger /path/to/ledger set-identity /path/to/unstaked-identity.json",
   "tower_file_path": "/path/to/ledger/tower-1_9-YOUR_IDENTITY.bin",
   "validator_identity": "YOUR_VALIDATOR_IDENTITY_PUBKEY",
-  "gossip_check_command": "solana -ut gossip | grep YOUR_VALIDATOR_IDENTITY_PUBKEY",
+  "gossip_check_command": "{solana} -um gossip | grep YOUR_VALIDATOR_IDENTITY_PUBKEY",
   "local_ip": "THIS_SERVER_PUBLIC_IP",
   "dry_run": true,
   "log_file": "/var/log/failover-validator.log"

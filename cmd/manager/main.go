@@ -495,21 +495,23 @@ func (m *Manager) checkVoteAccountStatus(ctx context.Context) (*VoteAccountStatu
 }
 
 // isValidatorStillVoting checks if the validator is still actively voting on the network
-// Returns true if vote account's lastVote is within threshold of network slot
+// Returns (stillVoting, reason, err) where err != nil means the check itself failed (RPC error,
+// network issue) and the voting state is unknown. err == nil means the check succeeded and
+// stillVoting accurately reflects the validator's state.
 // This is used to prevent false failovers when manager-to-validator connection is broken
 // but the validator itself is still operational
-func (m *Manager) isValidatorStillVoting(ctx context.Context) (bool, string) {
+func (m *Manager) isValidatorStillVoting(ctx context.Context) (bool, string, error) {
 	if m.config.VoteAccountPubkey == "" {
-		return false, "vote_account_pubkey not configured, cannot verify"
+		return false, "vote_account_pubkey not configured, cannot verify", nil
 	}
 
 	status, err := m.checkVoteAccountStatus(ctx)
 	if err != nil {
-		return false, fmt.Sprintf("failed to check vote account: %v", err)
+		return false, fmt.Sprintf("failed to check vote account: %v", err), err
 	}
 
 	if status.Error != "" {
-		return false, status.Error
+		return false, status.Error, nil
 	}
 
 	threshold := m.config.StaleVoteSlotThreshold
@@ -519,16 +521,55 @@ func (m *Manager) isValidatorStillVoting(ctx context.Context) (bool, string) {
 
 	if status.IsVoting && status.SlotsBehind <= threshold {
 		return true, fmt.Sprintf("vote account is active (lastVote: %d, %d slots behind, threshold: %d)",
-			status.LastVoteSlot, status.SlotsBehind, threshold)
+			status.LastVoteSlot, status.SlotsBehind, threshold), nil
 	}
 
 	if status.IsVoting && status.SlotsBehind > threshold {
 		return false, fmt.Sprintf("vote account voting but stale (lastVote: %d, %d slots behind, threshold: %d)",
-			status.LastVoteSlot, status.SlotsBehind, threshold)
+			status.LastVoteSlot, status.SlotsBehind, threshold), nil
 	}
 
 	return false, fmt.Sprintf("vote account delinquent (lastVote: %d, %d slots behind)",
-		status.LastVoteSlot, status.SlotsBehind)
+		status.LastVoteSlot, status.SlotsBehind), nil
+}
+
+// isValidatorInGossip checks if the validator identity is visible in the gossip network.
+// Returns (found, reason). This is used as a fallback when the RPC vote check fails,
+// since gossip uses a different transport and is not affected by RPC node overload.
+func (m *Manager) isValidatorInGossip() (bool, string) {
+	if m.config.GossipCheckCommand == "" {
+		return false, "gossip_check_command not configured"
+	}
+
+	gossipCmd := m.config.GossipCheckCommand
+	if strings.Contains(gossipCmd, "{solana}") {
+		servicePath := m.config.SolanaServicePath
+		if servicePath == "" {
+			servicePath = "/etc/systemd/system/solana.service"
+		}
+		agavePath, err := detectAgaveBinaryFromService(servicePath)
+		if err != nil {
+			return false, fmt.Sprintf("cannot resolve {solana} in gossip_check_command: %v", err)
+		}
+		solanaBinary := filepath.Join(filepath.Dir(agavePath), "solana")
+		gossipCmd = strings.ReplaceAll(gossipCmd, "{solana}", solanaBinary)
+	}
+
+	cmd := exec.Command("bash", "-c", gossipCmd)
+	output, err := cmd.Output()
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			return false, "validator identity not found in gossip"
+		}
+		return false, fmt.Sprintf("gossip check command failed: %v", err)
+	}
+
+	line := strings.TrimSpace(string(output))
+	if line == "" {
+		return false, "validator identity not found in gossip (empty output)"
+	}
+
+	return true, fmt.Sprintf("validator identity found in gossip: %s", line)
 }
 
 // isValidatorHealthy determines if a validator is healthy
@@ -1162,7 +1203,7 @@ func (m *Manager) checkAndFailover() {
 		if m.config.VoteAccountPubkey != "" {
 			log.Printf("Verifying vote account status before failover...")
 			voteCtx, voteCancel := context.WithTimeout(m.ctx, 10*time.Second)
-			stillVoting, voteReason := m.isValidatorStillVoting(voteCtx)
+			stillVoting, voteReason, voteErr := m.isValidatorStillVoting(voteCtx)
 			voteCancel()
 
 			if stillVoting {
@@ -1180,8 +1221,32 @@ func (m *Manager) checkAndFailover() {
 				return
 			}
 
-			log.Printf("Vote account check confirmed: %s", voteReason)
-			log.Printf("Proceeding with failover...")
+			if voteErr != nil {
+				// RPC check failed — voting state is unknown. Try gossip as fallback
+				// before allowing failover, since gossip uses a different transport.
+				log.Printf("Vote account RPC check failed: %s", voteReason)
+				log.Printf("Trying gossip fallback to determine if validator is still active...")
+				inGossip, gossipReason := m.isValidatorInGossip()
+				if inGossip {
+					log.Printf("FAILOVER BLOCKED: Validator is visible in gossip network!")
+					log.Printf("Gossip check: %s", gossipReason)
+					m.notify(fmt.Sprintf("⚠️ <b>FAILOVER BLOCKED - VALIDATOR IN GOSSIP</b>\n\n"+
+						"<b>Active:</b> %s (%s)\n"+
+						"<b>Trigger:</b> %s\n\n"+
+						"<b>Vote Account Check (RPC):</b>\n%s\n\n"+
+						"<b>Gossip Fallback:</b>\n%s\n\n"+
+						"Validator is visible in the gossip network.\n"+
+						"This appears to be an RPC connectivity issue, not a validator failure.\n"+
+						"Failover will NOT proceed to prevent double-identity situation.",
+						activeState.Name, activeState.Endpoint, failoverReason, voteReason, gossipReason))
+					return
+				}
+				log.Printf("Gossip fallback: %s", gossipReason)
+				log.Printf("Both RPC and gossip checks inconclusive or confirm validator is down. Proceeding with failover...")
+			} else {
+				log.Printf("Vote account check confirmed: %s", voteReason)
+				log.Printf("Proceeding with failover...")
+			}
 		} else {
 			log.Printf("WARNING: vote_account_pubkey not configured, skipping vote verification")
 			log.Printf("Configure vote_account_pubkey to prevent false failovers from connectivity issues")
